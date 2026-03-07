@@ -86,6 +86,8 @@ describe("orchestration projector", () => {
         proposedPlans: [],
         activities: [],
         checkpoints: [],
+        archivedAt: null,
+        boardColumn: "inbox",
         session: null,
       },
     ]);
@@ -212,6 +214,79 @@ describe("orchestration projector", () => {
     const thread = afterRunning.threads[0];
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
     expect(thread?.session?.status).toBe("running");
+  });
+
+  it("updates archivedAt and boardColumn from new thread events", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const archivedAt = "2026-02-23T08:02:00.000Z";
+    const model = createEmptyReadModel(createdAt);
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5.3-codex",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterArchive = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.archived",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: archivedAt,
+          commandId: "cmd-archive",
+          payload: {
+            threadId: "thread-1",
+            archivedAt,
+          },
+        }),
+      ),
+    );
+
+    const afterColumn = await Effect.runPromise(
+      projectEvent(
+        afterArchive,
+        makeEvent({
+          sequence: 3,
+          type: "thread.board-column-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: archivedAt,
+          commandId: "cmd-board-column",
+          payload: {
+            threadId: "thread-1",
+            boardColumn: "done",
+            updatedAt: archivedAt,
+          },
+        }),
+      ),
+    );
+
+    expect(afterColumn.threads[0]).toMatchObject({
+      archivedAt,
+      boardColumn: "done",
+    });
   });
 
   it("updates canonical thread runtime mode from thread.runtime-mode-set", async () => {

@@ -29,6 +29,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    archivedAt: null,
+    boardColumn: "inbox",
     ...overrides,
   };
 }
@@ -64,6 +66,8 @@ function makeReadModelThread(overrides: Partial<OrchestrationReadModel["threads"
     createdAt: "2026-02-27T00:00:00.000Z",
     updatedAt: "2026-02-27T00:00:00.000Z",
     deletedAt: null,
+    archivedAt: null,
+    boardColumn: "inbox",
     messages: [],
     activities: [],
     proposedPlans: [],
@@ -146,5 +150,22 @@ describe("store read model sync", () => {
     const next = syncServerReadModel(initialState, readModel);
 
     expect(next.threads[0]?.model).toBe(DEFAULT_MODEL_BY_PROVIDER.codex);
+  });
+
+  it("hydrates archivedAt and boardColumn from the read model", () => {
+    const initialState = makeState(makeThread());
+    const readModel = makeReadModel(
+      makeReadModelThread({
+        archivedAt: "2026-02-28T00:00:00.000Z",
+        boardColumn: "waiting",
+      }),
+    );
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.threads[0]).toMatchObject({
+      archivedAt: "2026-02-28T00:00:00.000Z",
+      boardColumn: "waiting",
+    });
   });
 });

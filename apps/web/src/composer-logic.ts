@@ -1,6 +1,11 @@
 import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 
-export type ComposerTriggerKind = "path" | "slash-command" | "slash-model";
+type ComposerTokenSegment = Extract<
+  ReturnType<typeof splitPromptIntoComposerSegments>[number],
+  { type: "path" | "skill" }
+>;
+
+export type ComposerTriggerKind = "path" | "skill" | "slash-command" | "slash-model";
 export type ComposerSlashCommand = "model" | "plan" | "default";
 
 export interface ComposerTrigger {
@@ -40,8 +45,8 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
   let expandedCursor = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention") {
-      const expandedLength = segment.path.length + 1;
+    if (segment.type === "path" || segment.type === "skill") {
+      const expandedLength = segment.value.length + 1;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
       }
@@ -61,12 +66,14 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
   return expandedCursor;
 }
 
-function collapsedSegmentLength(segment: { type: "text"; text: string } | { type: "mention" }): number {
-  return segment.type === "mention" ? 1 : segment.text.length;
+function collapsedSegmentLength(
+  segment: { type: "text"; text: string } | ComposerTokenSegment,
+): number {
+  return segment.type === "text" ? segment.text.length : 1;
 }
 
 function clampCollapsedComposerCursor(
-  segments: ReadonlyArray<{ type: "text"; text: string } | { type: "mention" }>,
+  segments: ReadonlyArray<{ type: "text"; text: string } | ComposerTokenSegment>,
   cursorInput: number,
 ): number {
   const collapsedLength = segments.reduce(
@@ -85,7 +92,7 @@ export function isCollapsedCursorAdjacentToMention(
   direction: "left" | "right",
 ): boolean {
   const segments = splitPromptIntoComposerSegments(text);
-  if (!segments.some((segment) => segment.type === "mention")) {
+  if (!segments.some((segment) => segment.type === "path" || segment.type === "skill")) {
     return false;
   }
 
@@ -93,7 +100,7 @@ export function isCollapsedCursorAdjacentToMention(
   let collapsedOffset = 0;
 
   for (const segment of segments) {
-    if (segment.type === "mention") {
+    if (segment.type === "path" || segment.type === "skill") {
       if (direction === "left" && cursor === collapsedOffset + 1) {
         return true;
       }
@@ -148,12 +155,12 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 
   const tokenStart = tokenStartForCursor(text, cursor);
   const token = text.slice(tokenStart, cursor);
-  if (!token.startsWith("@")) {
+  if (!token.startsWith("@") && !token.startsWith("$")) {
     return null;
   }
 
   return {
-    kind: "path",
+    kind: token.startsWith("$") ? "skill" : "path",
     query: token.slice(1),
     rangeStart: tokenStart,
     rangeEnd: cursor,

@@ -6,8 +6,10 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   OrchestrationGetTurnDiffInput,
+  OrchestrationThread,
   OrchestrationSession,
   ProjectCreateCommand,
+  ClientOrchestrationCommand,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
@@ -23,6 +25,8 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 );
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
+const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -183,6 +187,57 @@ it.effect("accepts provider-scoped model options in thread.turn.start", () =>
     assert.strictEqual(parsed.provider, "codex");
     assert.strictEqual(parsed.modelOptions?.codex?.reasoningEffort, "high");
     assert.strictEqual(parsed.modelOptions?.codex?.fastMode, true);
+  }),
+);
+
+it.effect("decodes archived and board-column thread commands", () =>
+  Effect.gen(function* () {
+    const archived = yield* decodeClientOrchestrationCommand({
+      type: "thread.archive",
+      commandId: "cmd-archive",
+      threadId: "thread-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const boardColumn = yield* decodeClientOrchestrationCommand({
+      type: "thread.board-column.set",
+      commandId: "cmd-board",
+      threadId: "thread-1",
+      boardColumn: "waiting",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(archived.type, "thread.archive");
+    assert.strictEqual(boardColumn.type, "thread.board-column.set");
+    if (boardColumn.type === "thread.board-column.set") {
+      assert.strictEqual(boardColumn.boardColumn, "waiting");
+    }
+  }),
+);
+
+it.effect("defaults thread boardColumn and archivedAt in read-model decoding", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationThread({
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Thread title",
+      model: "gpt-5.4",
+      interactionMode: "default",
+      runtimeMode: "full-access",
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      deletedAt: null,
+      archivedAt: null,
+      messages: [],
+      activities: [],
+      proposedPlans: [],
+      checkpoints: [],
+      session: null,
+    });
+
+    assert.strictEqual(parsed.archivedAt, null);
+    assert.strictEqual(parsed.boardColumn, "inbox");
   }),
 );
 

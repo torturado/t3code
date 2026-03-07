@@ -6,7 +6,7 @@ import {
   SquarePenIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_RUNTIME_MODE,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -31,7 +31,10 @@ import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { type DraftThreadEnvMode, useComposerDraftStore } from "../composerDraftStore";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useWorkspaceViewStore } from "../workspaceViewStore";
 import { toastManager } from "./ui/toast";
+import { EditableThreadTitle } from "./EditableThreadTitle";
+import { Badge } from "./ui/badge";
 import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
@@ -278,6 +281,9 @@ export default function Sidebar() {
     (store) => store.clearProjectDraftThreadById,
   );
   const navigate = useNavigate();
+  const workspaceMode = useWorkspaceViewStore((store) => store.mode);
+  const setWorkspaceMode = useWorkspaceViewStore((store) => store.setMode);
+  const syncWorkspaceRouteThread = useWorkspaceViewStore((store) => store.syncRouteThread);
   const { settings: appSettings } = useAppSettings();
   const routeThreadId = useParams({
     strict: false,
@@ -293,13 +299,12 @@ export default function Sidebar() {
   const [newCwd, setNewCwd] = useState("");
   const [isPickingFolder, setIsPickingFolder] = useState(false);
   const [isAddingProject, setIsAddingProject] = useState(false);
-  const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
-  const [renamingTitle, setRenamingTitle] = useState("");
   const [expandedThreadListsByProject, setExpandedThreadListsByProject] = useState<
     ReadonlySet<ProjectId>
   >(() => new Set());
-  const renamingCommittedRef = useRef(false);
-  const renamingInputRef = useRef<HTMLInputElement | null>(null);
+  const [expandedArchivedProjectsById, setExpandedArchivedProjectsById] = useState<
+    Record<string, boolean>
+  >({});
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const pendingApprovalByThreadId = useMemo(() => {
     const map = new Map<ThreadId, boolean>();
@@ -545,34 +550,18 @@ export default function Sidebar() {
     setIsPickingFolder(false);
   };
 
-  const cancelRename = useCallback(() => {
-    setRenamingThreadId(null);
-    renamingInputRef.current = null;
-  }, []);
-
   const commitRename = useCallback(
     async (threadId: ThreadId, newTitle: string, originalTitle: string) => {
-      const finishRename = () => {
-        setRenamingThreadId((current) => {
-          if (current !== threadId) return current;
-          renamingInputRef.current = null;
-          return null;
-        });
-      };
-
       const trimmed = newTitle.trim();
       if (trimmed.length === 0) {
         toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
-        finishRename();
         return;
       }
       if (trimmed === originalTitle) {
-        finishRename();
         return;
       }
       const api = readNativeApi();
       if (!api) {
-        finishRename();
         return;
       }
       try {
@@ -589,7 +578,6 @@ export default function Sidebar() {
           description: error instanceof Error ? error.message : "An error occurred.",
         });
       }
-      finishRename();
     },
     [],
   );
@@ -598,24 +586,19 @@ export default function Sidebar() {
     async (threadId: ThreadId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
+      const thread = threads.find((t) => t.id === threadId);
+      if (!thread) return;
       const clicked = await api.contextMenu.show(
         [
-          { id: "rename", label: "Rename thread" },
-          { id: "mark-unread", label: "Mark unread" },
+          ...(thread.archivedAt === null ? [{ id: "mark-unread", label: "Mark unread" }] : []),
           { id: "copy-thread-id", label: "Copy Thread ID" },
+          ...(thread.archivedAt === null
+            ? [{ id: "archive", label: "Archive thread" }]
+            : [{ id: "restore", label: "Restore thread" }]),
           { id: "delete", label: "Delete", destructive: true },
         ],
         position,
       );
-      const thread = threads.find((t) => t.id === threadId);
-      if (!thread) return;
-
-      if (clicked === "rename") {
-        setRenamingThreadId(threadId);
-        setRenamingTitle(thread.title);
-        renamingCommittedRef.current = false;
-        return;
-      }
 
       if (clicked === "mark-unread") {
         markThreadUnread(threadId);
@@ -636,6 +619,24 @@ export default function Sidebar() {
             description: error instanceof Error ? error.message : "An error occurred.",
           });
         }
+        return;
+      }
+      if (clicked === "archive") {
+        await api.orchestration.dispatchCommand({
+          type: "thread.archive",
+          commandId: newCommandId(),
+          threadId,
+          createdAt: new Date().toISOString(),
+        });
+        return;
+      }
+      if (clicked === "restore") {
+        await api.orchestration.dispatchCommand({
+          type: "thread.restore",
+          commandId: newCommandId(),
+          threadId,
+          createdAt: new Date().toISOString(),
+        });
         return;
       }
       if (clicked !== "delete") return;
@@ -975,6 +976,13 @@ export default function Sidebar() {
     });
   }, []);
 
+  const toggleArchivedThreadsForProject = useCallback((projectId: ProjectId) => {
+    setExpandedArchivedProjectsById((current) => ({
+      ...current,
+      [projectId]: !current[projectId],
+    }));
+  }, []);
+
   const wordmark = (
     <div className="flex items-center gap-2">
       <SidebarTrigger className="shrink-0 md:hidden" />
@@ -1034,12 +1042,15 @@ export default function Sidebar() {
                   if (byDate !== 0) return byDate;
                   return b.id.localeCompare(a.id);
                 });
+              const activeThreads = projectThreads.filter((thread) => thread.archivedAt === null);
+              const archivedThreads = projectThreads.filter((thread) => thread.archivedAt !== null);
               const isThreadListExpanded = expandedThreadListsByProject.has(project.id);
-              const hasHiddenThreads = projectThreads.length > THREAD_PREVIEW_LIMIT;
+              const hasHiddenThreads = activeThreads.length > THREAD_PREVIEW_LIMIT;
               const visibleThreads =
                 hasHiddenThreads && !isThreadListExpanded
-                  ? projectThreads.slice(0, THREAD_PREVIEW_LIMIT)
-                  : projectThreads;
+                  ? activeThreads.slice(0, THREAD_PREVIEW_LIMIT)
+                  : activeThreads;
+              const archivedExpanded = expandedArchivedProjectsById[project.id] ?? false;
 
               return (
                 <Collapsible
@@ -1187,42 +1198,17 @@ export default function Sidebar() {
                                       <span className="hidden md:inline">{threadStatus.label}</span>
                                     </span>
                                   )}
-                                  {renamingThreadId === thread.id ? (
-                                    <input
-                                      ref={(el) => {
-                                        if (el && renamingInputRef.current !== el) {
-                                          renamingInputRef.current = el;
-                                          el.focus();
-                                          el.select();
-                                        }
-                                      }}
-                                      className="min-w-0 flex-1 truncate text-xs bg-transparent outline-none border border-ring rounded px-0.5"
-                                      value={renamingTitle}
-                                      onChange={(e) => setRenamingTitle(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        e.stopPropagation();
-                                        if (e.key === "Enter") {
-                                          e.preventDefault();
-                                          renamingCommittedRef.current = true;
-                                          void commitRename(thread.id, renamingTitle, thread.title);
-                                        } else if (e.key === "Escape") {
-                                          e.preventDefault();
-                                          renamingCommittedRef.current = true;
-                                          cancelRename();
-                                        }
-                                      }}
-                                      onBlur={() => {
-                                        if (!renamingCommittedRef.current) {
-                                          void commitRename(thread.id, renamingTitle, thread.title);
-                                        }
-                                      }}
-                                      onClick={(e) => e.stopPropagation()}
-                                    />
-                                  ) : (
-                                    <span className="min-w-0 flex-1 truncate text-xs">
-                                      {thread.title}
-                                    </span>
-                                  )}
+                                  <EditableThreadTitle
+                                    value={thread.title}
+                                    title={thread.title}
+                                    preventParentInteraction
+                                    buttonClassName="min-w-0 flex-1"
+                                    className="text-xs"
+                                    inputClassName="min-w-0 flex-1 truncate text-xs"
+                                    onCommit={(nextTitle, previousTitle) =>
+                                      commitRename(thread.id, nextTitle, previousTitle)
+                                    }
+                                  />
                                 </div>
                                 <div className="ml-auto flex shrink-0 items-center gap-1.5">
                                   {terminalStatus && (
@@ -1278,6 +1264,66 @@ export default function Sidebar() {
                             </SidebarMenuSubButton>
                           </SidebarMenuSubItem>
                         )}
+                        {archivedThreads.length > 0 && (
+                          <SidebarMenuSubItem className="mt-1.5 w-full">
+                            <SidebarMenuSubButton
+                              render={<button type="button" />}
+                              size="sm"
+                              className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
+                              onClick={() => {
+                                toggleArchivedThreadsForProject(project.id);
+                              }}
+                            >
+                              <span>
+                                {archivedExpanded ? "Hide archived" : "Show archived"} (
+                                {archivedThreads.length})
+                              </span>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                        )}
+                        {archivedExpanded &&
+                          archivedThreads.map((thread) => {
+                            const isActive = routeThreadId === thread.id;
+                            return (
+                              <SidebarMenuSubItem key={`${thread.id}:archived`} className="w-full">
+                                <SidebarMenuSubButton
+                                  render={<div role="button" tabIndex={0} />}
+                                  size="sm"
+                                  isActive={isActive}
+                                  className={`h-7 w-full translate-x-0 cursor-default justify-start px-2 text-left ${
+                                    isActive
+                                      ? "bg-accent/85 text-foreground font-medium ring-1 ring-border/70 dark:bg-accent/55 dark:ring-border/50"
+                                      : "text-muted-foreground/75"
+                                  }`}
+                                  onClick={() => {
+                                    void navigate({
+                                      to: "/$threadId",
+                                      params: { threadId: thread.id },
+                                    });
+                                  }}
+                                  onContextMenu={(event) => {
+                                    event.preventDefault();
+                                    void handleThreadContextMenu(thread.id, {
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    });
+                                  }}
+                                >
+                                  <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                                    <Badge variant="outline" className="px-1 py-0 text-[9px]">
+                                      Archived
+                                    </Badge>
+                                    <span className="min-w-0 flex-1 truncate text-xs">
+                                      {thread.title}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-muted-foreground/40">
+                                    {formatRelativeTime(thread.createdAt)}
+                                  </span>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                            );
+                          })}
                       </SidebarMenuSub>
                     </CollapsibleContent>
                   </SidebarMenuItem>
@@ -1298,6 +1344,32 @@ export default function Sidebar() {
 
       <SidebarSeparator />
       <SidebarFooter className="gap-0 p-3">
+        <div className="mb-3">
+          <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            Workspace view
+          </p>
+          <div className="grid grid-cols-3 gap-1">
+            {(["single", "kanban", "split"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`rounded-md border px-2 py-1.5 text-[11px] capitalize transition-colors ${
+                  workspaceMode === mode
+                    ? "border-primary/50 bg-primary/10 text-foreground"
+                    : "border-border text-muted-foreground hover:bg-secondary"
+                }`}
+                onClick={() => {
+                  setWorkspaceMode(mode);
+                  if (mode === "split" && routeThreadId) {
+                    syncWorkspaceRouteThread(routeThreadId);
+                  }
+                }}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        </div>
         {addingProject ? (
           <>
             <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">

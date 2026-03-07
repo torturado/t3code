@@ -1526,6 +1526,46 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("supports skills.search", async () => {
+    const fakeHome = makeTempDir("t3code-ws-skills-");
+    fs.mkdirSync(path.join(fakeHome, ".agents", "skills", "Brainstorming"), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, ".agents", "skills", "Brainstorming", "SKILL.md"),
+      ["---", "name: Brainstorming", "description: Creative planning", "---"].join("\n"),
+      "utf8",
+    );
+
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    try {
+      const ws = await connectWs(port);
+      connections.push(ws);
+      await waitForMessage(ws);
+
+      const response = await sendRequest(ws, WS_METHODS.skillsSearch, {
+        query: "brain",
+        limit: 10,
+      });
+      expect(response.error).toBeUndefined();
+      expect(response.result).toEqual({
+        entries: [
+          expect.objectContaining({
+            name: "Brainstorming",
+            description: "Creative planning",
+            source: "agents",
+          }),
+        ],
+        truncated: false,
+      });
+    } finally {
+      homedirSpy.mockRestore();
+    }
+  });
+
   it("supports projects.writeFile within the workspace root", async () => {
     const workspace = makeTempDir("t3code-ws-write-file-");
 

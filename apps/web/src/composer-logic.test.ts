@@ -21,6 +21,30 @@ describe("detectComposerTrigger", () => {
     });
   });
 
+  it("detects $skill trigger with an empty query", () => {
+    const text = "$";
+    const trigger = detectComposerTrigger(text, text.length);
+
+    expect(trigger).toEqual({
+      kind: "skill",
+      query: "",
+      rangeStart: 0,
+      rangeEnd: 1,
+    });
+  });
+
+  it("detects $skill trigger while typing", () => {
+    const text = "Need $brain";
+    const trigger = detectComposerTrigger(text, text.length);
+
+    expect(trigger).toEqual({
+      kind: "skill",
+      query: "brain",
+      rangeStart: "Need ".length,
+      rangeEnd: text.length,
+    });
+  });
+
   it("detects slash command token while typing command name", () => {
     const text = "/mo";
     const trigger = detectComposerTrigger(text, text.length);
@@ -89,6 +113,16 @@ describe("expandCollapsedComposerCursor", () => {
     const expandedCursor = expandCollapsedComposerCursor(text, collapsedCursorAfterMention);
 
     expect(detectComposerTrigger(text, expandedCursor)).toBeNull();
+  });
+
+  it("maps collapsed skill cursor to expanded text cursor", () => {
+    const text = "Use $brainstorming today";
+    const collapsedCursorAfterSkill = "Use ".length + 1;
+    const expandedCursorAfterSkill = "Use $brainstorming".length;
+
+    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterSkill)).toBe(
+      expandedCursorAfterSkill,
+    );
   });
 });
 

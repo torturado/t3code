@@ -283,6 +283,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               completedAt: "2026-02-24T00:00:08.000Z",
             },
           ],
+          archivedAt: null,
+          boardColumn: "inbox",
           session: {
             threadId: ThreadId.makeUnsafe("thread-1"),
             status: "running",

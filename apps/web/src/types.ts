@@ -12,6 +12,7 @@ import type {
   ProviderKind,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadBoardColumn,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -100,6 +101,8 @@ export interface Thread {
   lastVisitedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  archivedAt: string | null;
+  boardColumn: ThreadBoardColumn;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
 }

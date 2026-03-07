@@ -258,8 +258,11 @@ export const launchDetached = (launch: EditorLaunch) =>
   });
 
 const make = Effect.gen(function* () {
+  const loadOpenModule = new Function("return import('open')") as () => Promise<{
+    default: (target: string) => Promise<void>;
+  }>;
   const open = yield* Effect.tryPromise({
-    try: () => import("open"),
+    try: () => loadOpenModule(),
     catch: (cause) => new OpenError({ message: "failed to load browser opener", cause }),
   });
 

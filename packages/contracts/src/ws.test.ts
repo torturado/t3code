@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
 import { ORCHESTRATION_WS_METHODS } from "./orchestration";
-import { WebSocketRequest } from "./ws";
+import { WS_METHODS, WebSocketRequest } from "./ws";
 
 const decodeWebSocketRequest = Schema.decodeUnknownEffect(WebSocketRequest);
 
@@ -53,6 +53,24 @@ it.effect("trims websocket request id and nested orchestration ids", () =>
     assert.strictEqual(parsed.body._tag, ORCHESTRATION_WS_METHODS.getTurnDiff);
     if (parsed.body._tag === ORCHESTRATION_WS_METHODS.getTurnDiff) {
       assert.strictEqual(parsed.body.threadId, "thread-1");
+    }
+  }),
+);
+
+it.effect("accepts skills.search websocket requests with empty queries", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "req-skill-1",
+      body: {
+        _tag: WS_METHODS.skillsSearch,
+        query: "",
+        limit: 25,
+      },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.skillsSearch);
+    if (parsed.body._tag === WS_METHODS.skillsSearch) {
+      assert.strictEqual(parsed.body.query, "");
+      assert.strictEqual(parsed.body.limit, 25);
     }
   }),
 );

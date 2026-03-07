@@ -16,6 +16,7 @@ import {
   type ProviderApprovalDecision,
   type ServerProviderStatus,
   type ProviderKind,
+  type SkillEntry,
   type ThreadId,
   type TurnId,
   OrchestrationThreadActivity,
@@ -49,6 +50,7 @@ import {
 } from "@tanstack/react-virtual";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
+import { skillSearchQueryOptions } from "~/lib/skillReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 
 import { isElectron } from "../env";
@@ -81,6 +83,7 @@ import {
   formatTimestamp,
 } from "../session-logic";
 import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollContainerNearBottom } from "../chat-scroll";
+import { hasBlockingComposerOverlay, shouldRedirectTypingToComposer } from "../chatComposerFocus";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -114,6 +117,7 @@ import {
   summarizeTurnDiffStats,
   type TurnDiffTreeNode,
 } from "../lib/turnDiffTree";
+import { EditableThreadTitle } from "./EditableThreadTitle";
 import BranchToolbar from "./BranchToolbar";
 import GitActionsControl from "./GitActionsControl";
 import {
@@ -256,6 +260,7 @@ const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_SKILL_ENTRIES: SkillEntry[] = [];
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
@@ -359,6 +364,8 @@ function buildLocalDraftThread(
     lastVisitedAt: draftThread.createdAt,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
+    archivedAt: null,
+    boardColumn: "inbox",
     turnDiffSummaries: [],
     activities: [],
     proposedPlans: [],
@@ -403,6 +410,14 @@ type ComposerCommandItem =
       type: "path";
       path: string;
       pathKind: ProjectEntry["kind"];
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "skill";
+      skillName: string;
+      skillPath: string;
       label: string;
       description: string;
     }
@@ -525,6 +540,11 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       {props.item.type === "slash-command" ? (
         <BotIcon className="size-4 text-muted-foreground/80" />
       ) : null}
+      {props.item.type === "skill" ? (
+        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+          skill
+        </Badge>
+      ) : null}
       {props.item.type === "model" ? (
         <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
           model
@@ -574,10 +594,14 @@ const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         {props.items.length === 0 && (
           <p className="px-3 py-2 text-muted-foreground/70 text-xs">
             {props.isLoading
-              ? "Searching workspace files..."
+              ? props.triggerKind === "skill"
+                ? "Searching installed skills..."
+                : "Searching workspace files..."
               : props.triggerKind === "path"
                 ? "No matching files or folders."
-                : "No matching command."}
+                : props.triggerKind === "skill"
+                  ? "No matching skills."
+                  : "No matching command."}
           </p>
         )}
       </div>
@@ -587,9 +611,17 @@ const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
 
 interface ChatViewProps {
   threadId: ThreadId;
+  embedded?: boolean;
+  isActiveWorkspacePane?: boolean;
+  onActivatePane?: () => void;
 }
 
-export default function ChatView({ threadId }: ChatViewProps) {
+export default function ChatView({
+  threadId,
+  embedded = false,
+  isActiveWorkspacePane = true,
+  onActivatePane,
+}: ChatViewProps) {
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const markThreadVisited = useStore((store) => store.markThreadVisited);
@@ -766,6 +798,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
+  const isArchivedThread = activeThread?.archivedAt !== null && activeThread?.archivedAt !== undefined;
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -942,6 +975,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     isComposerApprovalState ||
     pendingUserInputs.length > 0 ||
     (showPlanFollowUpPrompt && activeProposedPlan !== null);
+  const composerAcceptsTyping = !isConnecting && !isComposerApprovalState && !isArchivedThread;
   useEffect(() => {
     if (!activePendingProgress) {
       return;
@@ -1172,13 +1206,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const gitCwd = activeThread?.worktreePath ?? activeProject?.cwd ?? null;
   const composerTriggerKind = composerTrigger?.kind ?? null;
   const pathTriggerQuery = composerTrigger?.kind === "path" ? composerTrigger.query : "";
+  const skillTriggerQuery = composerTrigger?.kind === "skill" ? composerTrigger.query : "";
   const isPathTrigger = composerTriggerKind === "path";
+  const isSkillTrigger = composerTriggerKind === "skill";
   const [debouncedPathQuery, composerPathQueryDebouncer] = useDebouncedValue(
     pathTriggerQuery,
     { wait: COMPOSER_PATH_QUERY_DEBOUNCE_MS },
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
+  const [debouncedSkillQuery, composerSkillQueryDebouncer] = useDebouncedValue(
+    skillTriggerQuery,
+    { wait: COMPOSER_PATH_QUERY_DEBOUNCE_MS },
+    (debouncerState) => ({ isPending: debouncerState.isPending }),
+  );
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
+  const effectiveSkillQuery = skillTriggerQuery.length > 0 ? debouncedSkillQuery : skillTriggerQuery;
   const branchesQuery = useQuery(gitBranchesQueryOptions(gitCwd));
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const workspaceEntriesQuery = useQuery(
@@ -1190,6 +1232,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }),
   );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  const skillEntriesQuery = useQuery(
+    skillSearchQueryOptions({
+      query: effectiveSkillQuery,
+      enabled: isSkillTrigger,
+      limit: 40,
+    }),
+  );
+  const skillEntries = skillEntriesQuery.data?.entries ?? EMPTY_SKILL_ENTRIES;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -1200,6 +1250,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
         pathKind: entry.kind,
         label: basenameOfPath(entry.path),
         description: entry.parentPath ?? "",
+      }));
+    }
+
+    if (composerTrigger.kind === "skill") {
+      return skillEntries.map((entry) => ({
+        id: `skill:${entry.source}:${entry.name}`,
+        type: "skill",
+        skillName: entry.name,
+        skillPath: entry.skillPath,
+        label: `$${entry.name}`,
+        description: entry.description,
       }));
     }
 
@@ -1254,7 +1315,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
         showFastBadge:
           provider === "codex" && shouldShowFastTierIcon(slug, selectedServiceTierSetting),
       }));
-  }, [composerTrigger, searchableModelOptions, selectedServiceTierSetting, workspaceEntries]);
+  }, [
+    composerTrigger,
+    searchableModelOptions,
+    selectedServiceTierSetting,
+    skillEntries,
+    workspaceEntries,
+  ]);
   const composerMenuOpen = Boolean(composerTrigger);
   const activeComposerMenuItem = useMemo(
     () =>
@@ -1318,6 +1385,39 @@ export default function ChatView({ threadId }: ChatViewProps) {
       },
     });
   }, [diffOpen, navigate, threadId]);
+  const renameActiveThread = useCallback(
+    async (nextTitle: string, previousTitle: string) => {
+      const trimmed = nextTitle.trim();
+      if (!activeThread) return;
+      if (trimmed.length === 0) {
+        toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
+        return;
+      }
+      if (trimmed === previousTitle) {
+        return;
+      }
+      const api = readNativeApi();
+      if (!api) return;
+      await api.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        title: trimmed,
+      });
+    },
+    [activeThread],
+  );
+  const restoreArchivedThread = useCallback(async () => {
+    if (!activeThread) return;
+    const api = readNativeApi();
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.restore",
+      commandId: newCommandId(),
+      threadId: activeThread.id,
+      createdAt: new Date().toISOString(),
+    });
+  }, [activeThread]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -2175,6 +2275,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     };
 
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (!isActiveWorkspacePane) return;
       if (!activeThreadId || event.defaultPrevented) return;
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
@@ -2238,6 +2339,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return () => window.removeEventListener("keydown", handler);
   }, [
     activeProject,
+    isActiveWorkspacePane,
     terminalState.terminalOpen,
     terminalState.activeTerminalId,
     activeThreadId,
@@ -2399,6 +2501,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     e?.preventDefault();
     const api = readNativeApi();
     if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
+    if (isArchivedThread) {
+      toastManager.add({
+        type: "warning",
+        title: "Thread is archived",
+        description: "Restore the thread before sending a new message.",
+      });
+      return;
+    }
     if (activePendingProgress) {
       onAdvanceActivePendingUserInput();
       return;
@@ -3167,6 +3277,79 @@ export default function ChatView({ threadId }: ChatViewProps) {
     };
   }, [readComposerSnapshot]);
 
+  const insertTextIntoComposer = useCallback(
+    (insertedText: string) => {
+      const snapshot = readComposerSnapshot();
+      const next = replaceTextRange(snapshot.value, snapshot.cursor, snapshot.cursor, insertedText);
+      promptRef.current = next.text;
+      const activePendingQuestion = activePendingProgress?.activeQuestion;
+      if (activePendingQuestion && activePendingUserInput) {
+        setPendingUserInputAnswersByRequestId((existing) => ({
+          ...existing,
+          [activePendingUserInput.requestId]: {
+            ...existing[activePendingUserInput.requestId],
+            [activePendingQuestion.id]: setPendingUserInputCustomAnswer(
+              existing[activePendingUserInput.requestId]?.[activePendingQuestion.id],
+              next.text,
+            ),
+          },
+        }));
+      } else {
+        setPrompt(next.text);
+      }
+      setComposerCursor(next.cursor);
+      setComposerTrigger(detectComposerTrigger(next.text, next.cursor));
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(next.cursor);
+      });
+    },
+    [
+      activePendingProgress?.activeQuestion,
+      activePendingUserInput,
+      readComposerSnapshot,
+      setPendingUserInputAnswersByRequestId,
+      setPrompt,
+    ],
+  );
+
+  useEffect(() => {
+    if (!isActiveWorkspacePane || !activeThreadId || !composerAcceptsTyping) {
+      return;
+    }
+
+    const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (
+        !shouldRedirectTypingToComposer({
+          key: event.key,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          isComposing: event.isComposing,
+          target: event.target,
+          hasBlockingOverlay: hasBlockingComposerOverlay(),
+        })
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      onActivatePane?.();
+      insertTextIntoComposer(event.key);
+    };
+
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [
+    activeThreadId,
+    composerAcceptsTyping,
+    insertTextIntoComposer,
+    isActiveWorkspacePane,
+    onActivatePane,
+  ]);
+
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
       if (composerSelectLockRef.current) return;
@@ -3182,6 +3365,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
           trigger.rangeStart,
           trigger.rangeEnd,
           `@${item.path} `,
+          { expectedText: expectedToken },
+        );
+        if (applied) {
+          setComposerHighlightedItemId(null);
+        }
+        return;
+      }
+      if (item.type === "skill") {
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          trigger.rangeEnd,
+          `$${item.skillName} `,
           { expectedText: expectedToken },
         );
         if (applied) {
@@ -3245,10 +3440,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [composerHighlightedItemId, composerMenuItems],
   );
   const isComposerMenuLoading =
-    composerTriggerKind === "path" &&
-    ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
-      workspaceEntriesQuery.isLoading ||
-      workspaceEntriesQuery.isFetching);
+    (composerTriggerKind === "path" &&
+      ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
+        workspaceEntriesQuery.isLoading ||
+        workspaceEntriesQuery.isFetching)) ||
+    (composerTriggerKind === "skill" &&
+      ((skillTriggerQuery.length > 0 && composerSkillQueryDebouncer.state.isPending) ||
+        skillEntriesQuery.isLoading ||
+        skillEntriesQuery.isFetching));
 
   const onPromptChange = useCallback(
     (nextPrompt: string, nextCursor: number, cursorAdjacentToMention: boolean) => {
@@ -3378,7 +3577,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
+      onPointerDownCapture={() => {
+        onActivatePane?.();
+      }}
+    >
       {/* Top bar */}
       <header
         className={cn(
@@ -3391,6 +3595,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
           isGitRepo={isGitRepo}
+          diffAvailable={!embedded}
           openInCwd={activeThread.worktreePath ?? activeProject?.cwd ?? null}
           activeProjectScripts={activeProject?.scripts}
           preferredScriptId={
@@ -3401,6 +3606,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
           diffToggleShortcutLabel={diffPanelShortcutLabel}
           gitCwd={gitCwd}
           diffOpen={diffOpen}
+          keyboardShortcutsEnabled={isActiveWorkspacePane}
+          onRenameThread={renameActiveThread}
           onRunProjectScript={(script) => {
             void runProjectScript(script);
           }}
@@ -3412,6 +3619,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
       {/* Error banner */}
       <ProviderHealthBanner status={activeProviderStatus} />
+      {isArchivedThread && activeThread ? (
+        <ArchivedThreadBanner
+          archivedAt={activeThread.archivedAt}
+          onRestore={restoreArchivedThread}
+        />
+      ) : null}
       <ThreadErrorBanner error={activeThread.error} />
       <PlanModePanel activePlan={activePlan} />
 
@@ -3599,6 +3812,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                 placeholder={
                   isComposerApprovalState
                     ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
+                    : isArchivedThread
+                      ? "Restore this archived thread to continue the conversation"
                     : activePendingProgress
                     ? "Type your own answer, or leave this blank to use the selected option"
                     : showPlanFollowUpPrompt && activeProposedPlan
@@ -3607,7 +3822,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         ? "Ask for follow-up changes or attach images"
                         : "Ask anything, @tag files/folders, or use /model"
                 }
-                disabled={isConnecting || isComposerApprovalState}
+                disabled={isConnecting || isComposerApprovalState || isArchivedThread}
               />
             </div>
 
@@ -3755,7 +3970,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           type="submit"
                           size="sm"
                           className="h-9 rounded-full px-4 sm:h-8"
-                          disabled={isSendBusy || isConnecting}
+                          disabled={isSendBusy || isConnecting || isArchivedThread}
                         >
                           {isConnecting || isSendBusy ? "Sending..." : "Refine"}
                         </Button>
@@ -3765,7 +3980,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             type="submit"
                             size="sm"
                             className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
-                            disabled={isSendBusy || isConnecting}
+                            disabled={isSendBusy || isConnecting || isArchivedThread}
                           >
                             {isConnecting || isSendBusy ? "Sending..." : "Implement"}
                           </Button>
@@ -3777,7 +3992,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   variant="default"
                                   className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                                   aria-label="Implementation actions"
-                                  disabled={isSendBusy || isConnecting}
+                                  disabled={isSendBusy || isConnecting || isArchivedThread}
                                 />
                               }
                             >
@@ -3785,7 +4000,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             </MenuTrigger>
                             <MenuPopup align="end" side="top">
                               <MenuItem
-                                disabled={isSendBusy || isConnecting}
+                                disabled={isSendBusy || isConnecting || isArchivedThread}
                                 onClick={() => void onImplementPlanInNewThread()}
                               >
                                 Implement in new thread
@@ -3801,6 +4016,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         disabled={
                           isSendBusy ||
                           isConnecting ||
+                          isArchivedThread ||
                           (!prompt.trim() && composerImages.length === 0)
                         }
                         aria-label={
@@ -3972,6 +4188,7 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
+  diffAvailable: boolean;
   openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
@@ -3980,6 +4197,8 @@ interface ChatHeaderProps {
   diffToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffOpen: boolean;
+  keyboardShortcutsEnabled: boolean;
+  onRenameThread: (nextTitle: string, previousTitle: string) => Promise<void> | void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -3991,6 +4210,7 @@ const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
+  diffAvailable,
   openInCwd,
   activeProjectScripts,
   preferredScriptId,
@@ -3999,6 +4219,8 @@ const ChatHeader = memo(function ChatHeader({
   diffToggleShortcutLabel,
   gitCwd,
   diffOpen,
+  keyboardShortcutsEnabled,
+  onRenameThread,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -4008,11 +4230,14 @@ const ChatHeader = memo(function ChatHeader({
     <div className="flex min-w-0 flex-1 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-        <h2
-          className="min-w-0 shrink truncate text-sm font-medium text-foreground"
-          title={activeThreadTitle}
-        >
-          {activeThreadTitle}
+        <h2 className="min-w-0 shrink text-sm font-medium text-foreground">
+          <EditableThreadTitle
+            value={activeThreadTitle}
+            onCommit={onRenameThread}
+            buttonClassName="w-full"
+            className="text-sm font-medium"
+            inputClassName="w-full text-sm font-medium"
+          />
         </h2>
         {activeProjectName && (
           <Badge variant="outline" className="max-w-28 shrink-0 truncate">
@@ -4041,6 +4266,7 @@ const ChatHeader = memo(function ChatHeader({
             keybindings={keybindings}
             availableEditors={availableEditors}
             openInCwd={openInCwd}
+            keyboardShortcutsEnabled={keyboardShortcutsEnabled}
           />
         )}
         {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
@@ -4054,14 +4280,16 @@ const ChatHeader = memo(function ChatHeader({
                 aria-label="Toggle diff panel"
                 variant="outline"
                 size="xs"
-                disabled={!isGitRepo}
+                disabled={!isGitRepo || !diffAvailable}
               >
                 <DiffIcon className="size-3" />
               </Toggle>
             }
           />
           <TooltipPopup side="bottom">
-            {!isGitRepo
+            {!diffAvailable
+              ? "Diff panel is only available in single-thread view."
+              : !isGitRepo
               ? "Diff panel is unavailable because this project is not a git repository."
               : diffToggleShortcutLabel
                 ? `Toggle diff panel (${diffToggleShortcutLabel})`
@@ -4081,6 +4309,29 @@ const ThreadErrorBanner = memo(function ThreadErrorBanner({ error }: { error: st
         <CircleAlertIcon />
         <AlertDescription className="line-clamp-3" title={error}>
           {error}
+        </AlertDescription>
+      </Alert>
+    </div>
+  );
+});
+
+const ArchivedThreadBanner = memo(function ArchivedThreadBanner(props: {
+  archivedAt: string | null;
+  onRestore: () => void;
+}) {
+  return (
+    <div className="pt-3 mx-auto max-w-3xl">
+      <Alert variant="warning">
+        <CircleAlertIcon />
+        <AlertTitle>Thread archived</AlertTitle>
+        <AlertDescription className="flex items-center justify-between gap-3">
+          <span>
+            This thread is read-only until restored.
+            {props.archivedAt ? ` Archived ${formatTimestamp(props.archivedAt)}.` : ""}
+          </span>
+          <Button type="button" size="xs" variant="outline" onClick={props.onRestore}>
+            Restore
+          </Button>
         </AlertDescription>
       </Alert>
     </div>
@@ -4346,17 +4597,29 @@ const ComposerPlanFollowUpBanner = memo(function ComposerPlanFollowUpBanner({
   );
 });
 
-const MessageCopyButton = memo(function MessageCopyButton({ text }: { text: string }) {
+const MessageCopyButton = memo(function MessageCopyButton(props: {
+  text: string;
+  title?: string;
+  disabled?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(text);
+    if (props.disabled) return;
+    void navigator.clipboard.writeText(props.text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [text]);
+  }, [props.disabled, props.text]);
 
   return (
-    <Button type="button" size="xs" variant="outline" onClick={handleCopy} title="Copy message">
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      onClick={handleCopy}
+      title={props.title ?? "Copy message"}
+      disabled={props.disabled}
+    >
       {copied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
     </Button>
   );
@@ -5131,7 +5394,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
                   <span className="h-px flex-1 bg-border" />
                 </div>
               )}
-              <div className="min-w-0 px-1 py-0.5">
+              <div className="group min-w-0 px-1 py-0.5">
                 <ChatMarkdown
                   text={messageText}
                   cwd={markdownCwd}
@@ -5193,14 +5456,23 @@ const MessagesTimeline = memo(function MessagesTimeline({
                     </div>
                   );
                 })()}
-                <p className="mt-1.5 text-[10px] text-muted-foreground/30">
-                  {formatMessageMeta(
-                    row.message.createdAt,
-                    row.message.streaming
-                      ? formatElapsed(row.message.createdAt, nowIso)
-                      : formatElapsed(row.message.createdAt, row.message.completedAt),
-                  )}
-                </p>
+                <div className="mt-1.5 flex items-center justify-between gap-2">
+                  <div className="opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+                    <MessageCopyButton
+                      text={row.message.text}
+                      title="Copy markdown"
+                      disabled={row.message.streaming}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/30">
+                    {formatMessageMeta(
+                      row.message.createdAt,
+                      row.message.streaming
+                        ? formatElapsed(row.message.createdAt, nowIso)
+                        : formatElapsed(row.message.createdAt, row.message.completedAt),
+                    )}
+                  </p>
+                </div>
               </div>
             </>
           );
@@ -5558,10 +5830,12 @@ const OpenInPicker = memo(function OpenInPicker({
   keybindings,
   availableEditors,
   openInCwd,
+  keyboardShortcutsEnabled,
 }: {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   openInCwd: string | null;
+  keyboardShortcutsEnabled: boolean;
 }) {
   const [lastEditor, setLastEditor] = useState<EditorId>(() => {
     const stored = localStorage.getItem(LAST_EDITOR_KEY);
@@ -5626,6 +5900,9 @@ const OpenInPicker = memo(function OpenInPicker({
   );
 
   useEffect(() => {
+    if (!keyboardShortcutsEnabled) {
+      return;
+    }
     const handler = (e: globalThis.KeyboardEvent) => {
       const api = readNativeApi();
       if (!isOpenFavoriteEditorShortcut(e, keybindings)) return;
@@ -5637,7 +5914,7 @@ const OpenInPicker = memo(function OpenInPicker({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [effectiveEditor, keybindings, openInCwd]);
+  }, [effectiveEditor, keyboardShortcutsEnabled, keybindings, openInCwd]);
 
   return (
     <Group aria-label="Subscription actions">

@@ -213,6 +213,20 @@ describe("wsNativeApi", () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards skills.search through the websocket transport", async () => {
+    requestMock.mockResolvedValueOnce({ entries: [], truncated: false });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    const result = await api.skills.search({ query: "", limit: 20 });
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.skillsSearch, {
+      query: "",
+      limit: 20,
+    });
+    expect(result).toEqual({ entries: [], truncated: false });
+  });
+
   it("forwards valid terminal and orchestration events", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { createWsNativeApi } = await import("./wsNativeApi");

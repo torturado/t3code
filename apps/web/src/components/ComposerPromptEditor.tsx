@@ -57,41 +57,54 @@ import { basenameOfPath, getVscodeIconUrlForEntry } from "~/vscode-icons";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
 
-type SerializedComposerMentionNode = Spread<
+type ComposerTokenKind = "path" | "skill";
+
+type SerializedComposerTokenNode = Spread<
   {
-    path: string;
-    type: "composer-mention";
+    tokenKind: ComposerTokenKind;
+    value: string;
+    type: "composer-token";
     version: 1;
   },
   SerializedTextNode
 >;
 
-class ComposerMentionNode extends TextNode {
-  __path: string;
+class ComposerTokenNode extends TextNode {
+  __tokenKind: ComposerTokenKind;
+  __value: string;
 
   static override getType(): string {
-    return "composer-mention";
+    return "composer-token";
   }
 
-  static override clone(node: ComposerMentionNode): ComposerMentionNode {
-    return new ComposerMentionNode(node.__path, node.__key);
+  static override clone(node: ComposerTokenNode): ComposerTokenNode {
+    return new ComposerTokenNode(node.__tokenKind, node.__value, node.__key);
   }
 
-  static override importJSON(serializedNode: SerializedComposerMentionNode): ComposerMentionNode {
-    return $createComposerMentionNode(serializedNode.path);
+  static override importJSON(serializedNode: SerializedComposerTokenNode): ComposerTokenNode {
+    return $createComposerTokenNode(serializedNode.tokenKind, serializedNode.value);
   }
 
-  constructor(path: string, key?: NodeKey) {
-    const normalizedPath = path.startsWith("@") ? path.slice(1) : path;
-    super(`@${normalizedPath}`, key);
-    this.__path = normalizedPath;
+  constructor(tokenKind: ComposerTokenKind, value: string, key?: NodeKey) {
+    const normalizedValue =
+      tokenKind === "skill"
+        ? value.startsWith("$")
+          ? value.slice(1)
+          : value
+        : value.startsWith("@")
+          ? value.slice(1)
+          : value;
+    super(`${tokenKind === "skill" ? "$" : "@"}${normalizedValue}`, key);
+    this.__tokenKind = tokenKind;
+    this.__value = normalizedValue;
   }
 
-  override exportJSON(): SerializedComposerMentionNode {
+  override exportJSON(): SerializedComposerTokenNode {
     return {
       ...super.exportJSON(),
-      path: this.__path,
-      type: "composer-mention",
+      tokenKind: this.__tokenKind,
+      value: this.__value,
+      type: "composer-token",
       version: 1,
     };
   }
@@ -102,18 +115,22 @@ class ComposerMentionNode extends TextNode {
       "inline-flex select-none items-center gap-1 rounded-md border border-border/70 bg-accent/40 px-1.5 py-px font-medium text-[12px] leading-[1.1] text-foreground align-middle";
     dom.contentEditable = "false";
     dom.setAttribute("spellcheck", "false");
-    renderMentionChipDom(dom, this.__path);
+    renderTokenChipDom(dom, this.__tokenKind, this.__value);
     return dom;
   }
 
   override updateDOM(
-    prevNode: ComposerMentionNode,
+    prevNode: ComposerTokenNode,
     dom: HTMLElement,
     _config: EditorConfig,
   ): boolean {
     dom.contentEditable = "false";
-    if (prevNode.__text !== this.__text || prevNode.__path !== this.__path) {
-      renderMentionChipDom(dom, this.__path);
+    if (
+      prevNode.__text !== this.__text ||
+      prevNode.__tokenKind !== this.__tokenKind ||
+      prevNode.__value !== this.__value
+    ) {
+      renderTokenChipDom(dom, this.__tokenKind, this.__value);
     }
     return false;
   }
@@ -135,11 +152,14 @@ class ComposerMentionNode extends TextNode {
   }
 }
 
-function $createComposerMentionNode(path: string): ComposerMentionNode {
-  return $applyNodeReplacement(new ComposerMentionNode(path));
+function $createComposerTokenNode(
+  tokenKind: ComposerTokenKind,
+  value: string,
+): ComposerTokenNode {
+  return $applyNodeReplacement(new ComposerTokenNode(tokenKind, value));
 }
 
-function inferMentionPathKind(pathValue: string): "file" | "directory" {
+function inferTokenPathKind(pathValue: string): "file" | "directory" {
   const base = basenameOfPath(pathValue);
   if (base.startsWith(".") && !base.slice(1).includes(".")) {
     return "directory";
@@ -154,10 +174,26 @@ function resolvedThemeFromDocument(): "light" | "dark" {
   return document.documentElement.classList.contains("dark") ? "dark" : "light";
 }
 
-function renderMentionChipDom(container: HTMLElement, pathValue: string): void {
+function renderTokenChipDom(
+  container: HTMLElement,
+  tokenKind: ComposerTokenKind,
+  value: string,
+): void {
   container.textContent = "";
   container.style.setProperty("user-select", "none");
   container.style.setProperty("-webkit-user-select", "none");
+
+  const label = document.createElement("span");
+  label.className = "truncate select-none leading-tight";
+  if (tokenKind === "skill") {
+    const badge = document.createElement("span");
+    badge.className =
+      "inline-flex size-3.5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-semibold leading-none";
+    badge.textContent = "$";
+    label.textContent = value;
+    container.append(badge, label);
+    return;
+  }
 
   const theme = resolvedThemeFromDocument();
   const icon = document.createElement("img");
@@ -165,11 +201,8 @@ function renderMentionChipDom(container: HTMLElement, pathValue: string): void {
   icon.ariaHidden = "true";
   icon.className = "size-3.5 shrink-0 opacity-85";
   icon.loading = "lazy";
-  icon.src = getVscodeIconUrlForEntry(pathValue, inferMentionPathKind(pathValue), theme);
-
-  const label = document.createElement("span");
-  label.className = "truncate select-none leading-tight";
-  label.textContent = basenameOfPath(pathValue);
+  icon.src = getVscodeIconUrlForEntry(value, inferTokenPathKind(value), theme);
+  label.textContent = basenameOfPath(value);
 
   container.append(icon, label);
 }
@@ -180,7 +213,7 @@ function clampCursor(value: string, cursor: number): number {
 }
 
 function getComposerNodeTextLength(node: LexicalNode): number {
-  if (node instanceof ComposerMentionNode) {
+  if (node instanceof ComposerTokenNode) {
     return 1;
   }
   if ($isTextNode(node)) {
@@ -215,7 +248,7 @@ function getAbsoluteOffsetForPoint(node: LexicalNode, pointOffset: number): numb
   }
 
   if ($isTextNode(node)) {
-    if (node instanceof ComposerMentionNode) {
+    if (node instanceof ComposerTokenNode) {
       return offset + (pointOffset > 0 ? 1 : 0);
     }
     return offset + Math.min(pointOffset, node.getTextContentSize());
@@ -243,7 +276,7 @@ function findSelectionPointAtOffset(
   node: LexicalNode,
   remainingRef: { value: number },
 ): { key: string; offset: number; type: "text" | "element" } | null {
-  if (node instanceof ComposerMentionNode) {
+  if (node instanceof ComposerTokenNode) {
     const parent = node.getParent();
     if (!parent || !$isElementNode(parent)) return null;
     const index = node.getIndexWithinParent();
@@ -375,8 +408,8 @@ function $setComposerEditorPrompt(prompt: string): void {
 
   const segments = splitPromptIntoComposerSegments(prompt);
   for (const segment of segments) {
-    if (segment.type === "mention") {
-      paragraph.append($createComposerMentionNode(segment.path));
+    if (segment.type === "path" || segment.type === "skill") {
+      paragraph.append($createComposerTokenNode(segment.type, segment.value));
       continue;
     }
     $appendTextWithLineBreaks(paragraph, segment.text);
@@ -540,7 +573,7 @@ function ComposerMentionSelectionNormalizePlugin() {
         const selection = $getSelection();
         if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
         const anchorNode = selection.anchor.getNode();
-        if (!(anchorNode instanceof ComposerMentionNode)) return;
+        if (!(anchorNode instanceof ComposerTokenNode)) return;
         if (selection.anchor.offset === 0) return;
         const beforeOffset = getAbsoluteOffsetForPoint(anchorNode, 0);
         afterOffset = beforeOffset + 1;
@@ -572,7 +605,7 @@ function ComposerMentionBackspacePlugin() {
 
         const anchorNode = selection.anchor.getNode();
         const removeMentionNode = (candidate: unknown): boolean => {
-          if (!(candidate instanceof ComposerMentionNode)) {
+          if (!(candidate instanceof ComposerTokenNode)) {
             return false;
           }
           const mentionStart = getAbsoluteOffsetForPoint(candidate, 0);
@@ -781,7 +814,7 @@ export const ComposerPromptEditor = forwardRef<ComposerPromptEditorHandle, Compo
       () => ({
         namespace: "t3tools-composer-editor",
         editable: true,
-        nodes: [ComposerMentionNode],
+        nodes: [ComposerTokenNode],
         editorState: () => {
           $setComposerEditorPrompt(initialValueRef.current);
         },

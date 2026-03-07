@@ -571,17 +571,27 @@ describe("TerminalManager", () => {
     expect(ptyAdapter.spawnInputs[0]?.shell).toBe("/definitely/missing-shell");
 
     if (process.platform === "win32") {
-      expect(
-        ptyAdapter.spawnInputs.some(
-          (input) => input.shell === "cmd.exe" || input.shell === "powershell.exe",
+      const fallbackShells = new Set(
+        [process.env.ComSpec, "cmd.exe", "powershell.exe"].filter(
+          (value): value is string => Boolean(value),
         ),
+      );
+      expect(
+        ptyAdapter.spawnInputs.some((input) => fallbackShells.has(input.shell)),
       ).toBe(true);
     } else {
-      expect(
-        ptyAdapter.spawnInputs.some((input) =>
-          ["/bin/zsh", "/bin/bash", "/bin/sh", "zsh", "bash", "sh"].includes(input.shell),
-        ),
-      ).toBe(true);
+      const fallbackShells = new Set(
+        [
+          process.env.SHELL,
+          "/bin/zsh",
+          "/bin/bash",
+          "/bin/sh",
+          "zsh",
+          "bash",
+          "sh",
+        ].filter((value): value is string => Boolean(value)),
+      );
+      expect(ptyAdapter.spawnInputs.some((input) => fallbackShells.has(input.shell))).toBe(true);
     }
 
     manager.dispose();

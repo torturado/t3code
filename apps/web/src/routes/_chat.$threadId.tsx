@@ -3,10 +3,13 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, type ReactNode, useCallback, useEffect } from "react";
 
 import ChatView from "../components/ChatView";
+import KanbanBoardView from "../components/KanbanBoardView";
+import SplitWorkspaceView from "../components/SplitWorkspaceView";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
+import { useWorkspaceViewStore } from "../workspaceViewStore";
 import { Sheet, SheetPopup } from "../components/ui/sheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 
@@ -135,6 +138,8 @@ const DiffPanelInlineSidebar = (props: {
 function ChatThreadRouteView() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const navigate = useNavigate();
+  const workspaceMode = useWorkspaceViewStore((store) => store.mode);
+  const syncRouteThread = useWorkspaceViewStore((store) => store.syncRouteThread);
   const threadId = Route.useParams({
     select: (params) => ThreadId.makeUnsafe(params.threadId),
   });
@@ -177,8 +182,38 @@ function ChatThreadRouteView() {
     }
   }, [navigate, routeThreadExists, threadsHydrated, threadId]);
 
+  useEffect(() => {
+    if (workspaceMode !== "split") {
+      return;
+    }
+    syncRouteThread(threadId);
+  }, [syncRouteThread, threadId, workspaceMode]);
+
+  useEffect(() => {
+    if (workspaceMode === "single" || !diffOpen) {
+      return;
+    }
+    closeDiff();
+  }, [closeDiff, diffOpen, workspaceMode]);
+
   if (!threadsHydrated || !routeThreadExists) {
     return null;
+  }
+
+  if (workspaceMode === "kanban") {
+    return (
+      <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+        <KanbanBoardView activeThreadId={threadId} />
+      </SidebarInset>
+    );
+  }
+
+  if (workspaceMode === "split") {
+    return (
+      <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+        <SplitWorkspaceView routeThreadId={threadId} />
+      </SidebarInset>
+    );
   }
 
   if (!shouldUseDiffSheet) {

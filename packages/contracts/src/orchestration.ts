@@ -55,6 +55,8 @@ export const ProviderRequestKind = Schema.Literals(["command", "file-read", "fil
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
 export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
+export const ThreadBoardColumn = Schema.Literals(["inbox", "active", "waiting", "done"]);
+export type ThreadBoardColumn = typeof ThreadBoardColumn.Type;
 export const ProviderApprovalDecision = Schema.Literals([
   "accept",
   "acceptForSession",
@@ -256,6 +258,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  boardColumn: ThreadBoardColumn.pipe(Schema.withDecodingDefault(() => "inbox")),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -326,6 +330,20 @@ const ThreadDeleteCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
+const ThreadArchiveCommand = Schema.Struct({
+  type: Schema.Literal("thread.archive"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+const ThreadRestoreCommand = Schema.Struct({
+  type: Schema.Literal("thread.restore"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
@@ -334,6 +352,14 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+});
+
+const ThreadBoardColumnSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.board-column.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  boardColumn: ThreadBoardColumn,
+  createdAt: IsoDateTime,
 });
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({
@@ -441,7 +467,10 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
+  ThreadArchiveCommand,
+  ThreadRestoreCommand,
   ThreadMetaUpdateCommand,
+  ThreadBoardColumnSetCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
@@ -460,7 +489,10 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
+  ThreadArchiveCommand,
+  ThreadRestoreCommand,
   ThreadMetaUpdateCommand,
+  ThreadBoardColumnSetCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
@@ -560,7 +592,10 @@ export const OrchestrationEventType = Schema.Literals([
   "project.deleted",
   "thread.created",
   "thread.deleted",
+  "thread.archived",
+  "thread.restored",
   "thread.meta-updated",
+  "thread.board-column-set",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
@@ -626,12 +661,29 @@ export const ThreadDeletedPayload = Schema.Struct({
   deletedAt: IsoDateTime,
 });
 
+export const ThreadArchivedPayload = Schema.Struct({
+  threadId: ThreadId,
+  archivedAt: IsoDateTime,
+});
+
+export const ThreadRestoredPayload = Schema.Struct({
+  threadId: ThreadId,
+  archivedAt: Schema.Null,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(TrimmedNonEmptyString),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadBoardColumnSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  boardColumn: ThreadBoardColumn,
   updatedAt: IsoDateTime,
 });
 
@@ -801,8 +853,23 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.archived"),
+    payload: ThreadArchivedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.restored"),
+    payload: ThreadRestoredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.meta-updated"),
     payload: ThreadMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.board-column-set"),
+    payload: ThreadBoardColumnSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -905,8 +972,23 @@ export const OrchestrationPersistedEvent = Schema.Union([
   }),
   Schema.Struct({
     ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.archived"),
+    payload: ThreadArchivedPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.restored"),
+    payload: ThreadRestoredPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
     eventType: Schema.Literal("thread.meta-updated"),
     payload: ThreadMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...PersistedEventBaseFields,
+    eventType: Schema.Literal("thread.board-column-set"),
+    payload: ThreadBoardColumnSetPayload,
   }),
   Schema.Struct({
     ...PersistedEventBaseFields,

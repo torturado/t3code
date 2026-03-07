@@ -2,14 +2,13 @@ import { ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { selectThreadTerminalState, useTerminalStateStore } from "./terminalStateStore";
+import { getPersistStorage } from "./persistStorage";
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-1");
 
 describe("terminalStateStore actions", () => {
   beforeEach(() => {
-    if (typeof localStorage !== "undefined") {
-      localStorage.clear();
-    }
+    getPersistStorage().clear();
     useTerminalStateStore.setState({ terminalStateByThreadId: {} });
   });
 

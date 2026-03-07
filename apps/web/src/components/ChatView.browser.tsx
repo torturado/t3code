@@ -213,6 +213,8 @@ function createSnapshotForTargetUser(options: {
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
         deletedAt: null,
+        archivedAt: null,
+        boardColumn: "inbox",
         messages,
         activities: [],
         proposedPlans: [],
