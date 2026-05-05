@@ -558,7 +558,63 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
 }
 
 const ExactSemverTagPattern =
-  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+interface ParsedSemver {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+  readonly prerelease: ReadonlyArray<string>;
+}
+
+function parseExactSemver(version: string): ParsedSemver {
+  const [, major = "0", minor = "0", patch = "0", prerelease = ""] =
+    ExactSemverTagPattern.exec(version) ?? [];
+
+  return {
+    major: Number(major),
+    minor: Number(minor),
+    patch: Number(patch),
+    prerelease: prerelease ? prerelease.split(".") : [],
+  };
+}
+
+function comparePrereleaseIdentifier(a: string, b: string): number {
+  const aNumeric = /^\d+$/.test(a);
+  const bNumeric = /^\d+$/.test(b);
+
+  if (aNumeric && bNumeric) {
+    return Number(a) - Number(b);
+  }
+  if (aNumeric) return -1;
+  if (bNumeric) return 1;
+
+  return a.localeCompare(b, "en");
+}
+
+function compareSemverPrecedence(a: string, b: string): number {
+  const left = parseExactSemver(a);
+  const right = parseExactSemver(b);
+
+  const releaseDifference =
+    left.major - right.major || left.minor - right.minor || left.patch - right.patch;
+  if (releaseDifference !== 0) return releaseDifference;
+
+  if (left.prerelease.length === 0 && right.prerelease.length > 0) return 1;
+  if (left.prerelease.length > 0 && right.prerelease.length === 0) return -1;
+
+  for (const [index, leftIdentifier] of left.prerelease.entries()) {
+    const rightIdentifier = right.prerelease[index];
+    if (rightIdentifier === undefined) return 1;
+
+    const difference = comparePrereleaseIdentifier(leftIdentifier, rightIdentifier);
+    if (difference !== 0) return difference;
+  }
+
+  if (right.prerelease.length > left.prerelease.length) return -1;
+
+  return a.localeCompare(b, "en");
+}
 
 export function resolveDesktopArtifactVersion(
   explicitVersion: string | undefined,
@@ -572,7 +628,7 @@ export function resolveDesktopArtifactVersion(
   const headSemverVersions = headTags
     .filter((tag) => ExactSemverTagPattern.test(tag))
     .map((tag) => tag.replace(/^v/, ""))
-    .toSorted((a, b) => a.localeCompare(b, "en"));
+    .toSorted(compareSemverPrecedence);
 
   return headSemverVersions.at(-1) ?? fallbackVersion;
 }

@@ -46,6 +46,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
+  it("orders HEAD semver tags by semver precedence instead of lexicographic order", () => {
+    assert.equal(
+      resolveDesktopArtifactVersion(undefined, ["v1.2.0", "v1.10.0"], "0.0.22"),
+      "1.10.0",
+    );
+  });
+
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
       macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
