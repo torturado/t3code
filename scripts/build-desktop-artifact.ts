@@ -150,6 +150,31 @@ const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRo
   return hash.toLowerCase();
 });
 
+const resolveGitHeadTags = Effect.fn("resolveGitHeadTags")(function* (repoRoot: string) {
+  const result = yield* spawnAndCollectOutput(
+    ChildProcess.make("git", ["tag", "--points-at", "HEAD"], {
+      cwd: repoRoot,
+    }),
+  ).pipe(
+    Effect.catch(() =>
+      Effect.succeed({
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      }),
+    ),
+  );
+
+  if (result.exitCode !== 0) {
+    return [];
+  }
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+});
+
 const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -532,6 +557,26 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
+const ExactSemverTagPattern =
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+export function resolveDesktopArtifactVersion(
+  explicitVersion: string | undefined,
+  headTags: ReadonlyArray<string>,
+  fallbackVersion: string,
+): string {
+  if (explicitVersion) {
+    return explicitVersion;
+  }
+
+  const headSemverVersions = headTags
+    .filter((tag) => ExactSemverTagPattern.test(tag))
+    .map((tag) => tag.replace(/^v/, ""))
+    .toSorted((a, b) => a.localeCompare(b, "en"));
+
+  return headSemverVersions.at(-1) ?? fallbackVersion;
+}
+
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
   if (resolveDesktopUpdateChannel(version) === "nightly") {
     return {
@@ -710,7 +755,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       }),
   });
 
-  const appVersion = options.version ?? serverPackageJson.version;
+  const appVersion = resolveDesktopArtifactVersion(
+    options.version,
+    yield* resolveGitHeadTags(repoRoot),
+    serverPackageJson.version,
+  );
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
