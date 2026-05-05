@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, Option } from "effect";
 
 import {
+  resolveDesktopArtifactVersion,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
@@ -21,6 +22,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  });
+
+  it("resolves explicit desktop artifact versions before HEAD tags", () => {
+    assert.equal(resolveDesktopArtifactVersion("9.9.9", ["v1.2.3"], "0.0.22"), "9.9.9");
+  });
+
+  it("falls back to the server package version when HEAD has no exact semver tags", () => {
+    assert.equal(
+      resolveDesktopArtifactVersion(undefined, ["release-1.2.3", "1.2", "1.2.3-dev+"], "0.0.22"),
+      "0.0.22",
+    );
+  });
+
+  it("strips a leading v from exact semver tags on HEAD", () => {
+    assert.equal(resolveDesktopArtifactVersion(undefined, ["v1.2.3"], "0.0.22"), "1.2.3");
+  });
+
+  it("resolves multiple HEAD semver tags deterministically", () => {
+    assert.equal(
+      resolveDesktopArtifactVersion(undefined, ["v1.2.4", "1.2.3", "not-a-version"], "0.0.22"),
+      "1.2.4",
+    );
+  });
+
+  it("orders HEAD semver tags by semver precedence instead of lexicographic order", () => {
+    assert.equal(
+      resolveDesktopArtifactVersion(undefined, ["v1.2.0", "v1.10.0"], "0.0.22"),
+      "1.10.0",
+    );
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
