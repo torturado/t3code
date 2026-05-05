@@ -147,6 +147,13 @@ function getWindowForTest(): Window & typeof globalThis & { desktopBridge?: unkn
   return testGlobal.window;
 }
 
+function stubNavigatorPlatform(platform: string) {
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    value: platform,
+  });
+}
+
 function createLocalStorageStub(): Storage {
   const store = new Map<string, string>();
   return {
@@ -533,6 +540,7 @@ describe("wsApi", () => {
   });
 
   it("forwards context menu metadata to the desktop bridge", async () => {
+    stubNavigatorPlatform("MacIntel");
     const showContextMenu = vi.fn().mockResolvedValue("delete");
     getWindowForTest().desktopBridge = makeDesktopBridge({ showContextMenu });
 
@@ -542,6 +550,21 @@ describe("wsApi", () => {
 
     await expect(api.contextMenu.show(items)).resolves.toBe("delete");
     expect(showContextMenu).toHaveBeenCalledWith(items, undefined);
+  });
+
+  it("uses the shared web-rendered context menu on Linux desktop", async () => {
+    stubNavigatorPlatform("Linux x86_64");
+    showContextMenuFallbackMock.mockResolvedValue("rename");
+    const showContextMenu = vi.fn().mockResolvedValue("delete");
+    getWindowForTest().desktopBridge = makeDesktopBridge({ showContextMenu });
+
+    const { createLocalApi } = await import("./localApi");
+    const api = createLocalApi(rpcClientMock as never);
+    const items = [{ id: "rename", label: "Rename" }] as const;
+
+    await expect(api.contextMenu.show(items, { x: 8, y: 13 })).resolves.toBe("rename");
+    expect(showContextMenuFallbackMock).toHaveBeenCalledWith(items, { x: 8, y: 13 });
+    expect(showContextMenu).not.toHaveBeenCalled();
   });
 
   it("forwards folder picker options to the desktop bridge", async () => {
