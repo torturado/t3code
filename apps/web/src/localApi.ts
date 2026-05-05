@@ -16,6 +16,7 @@ import {
 import { getPrimaryKnownEnvironment } from "./environments/primary";
 import { type WsRpcClient } from "./rpc/wsRpcClient";
 import { showContextMenuFallback } from "./contextMenuFallback";
+import { isLinuxPlatform } from "./lib/utils";
 import {
   readBrowserClientSettings,
   readBrowserSavedEnvironmentRegistry,
@@ -30,6 +31,10 @@ let cachedApi: LocalApi | undefined;
 
 function unavailableLocalBackendError(): Error {
   return new Error("Local backend API is unavailable before a backend is paired.");
+}
+
+function shouldUseWebRenderedContextMenu(): boolean {
+  return Boolean(window.desktopBridge) && isLinuxPlatform(navigator.platform);
 }
 
 function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
@@ -68,7 +73,7 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         items: readonly ContextMenuItem<T>[],
         position?: { x: number; y: number },
       ): Promise<T | null> => {
-        if (window.desktopBridge) {
+        if (window.desktopBridge && !shouldUseWebRenderedContextMenu()) {
           return window.desktopBridge.showContextMenu(items, position) as Promise<T | null>;
         }
         return showContextMenuFallback(items, position);
