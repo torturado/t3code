@@ -129,6 +129,7 @@ import { serverEnvironment } from "~/state/server";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { ServerUpdateAction, ServerUpdateProgress } from "../ServerUpdateAction";
 import { CloudEnvironmentConnectRows } from "../cloud/CloudEnvironmentConnectList";
+import { CodexProfileSyncDialog } from "./CodexProfileSyncDialog";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
@@ -1353,6 +1354,7 @@ type SavedBackendListRowProps = {
   removingEnvironmentId: EnvironmentId | null;
   onConnect: (environmentId: EnvironmentId) => void;
   onRemove: (environmentId: EnvironmentId) => void;
+  onSyncCodexProfile?: (target: DesktopSshEnvironmentTarget) => void;
 };
 
 function SavedBackendListRow({
@@ -1360,6 +1362,7 @@ function SavedBackendListRow({
   removingEnvironmentId,
   onConnect,
   onRemove,
+  onSyncCodexProfile,
 }: SavedBackendListRowProps) {
   const environmentId = environment.environmentId;
   const connectionState = environment.connection.phase;
@@ -1503,6 +1506,17 @@ function SavedBackendListRow({
             </Tooltip>
           ) : (
             <>
+              {sshTarget !== null && onSyncCodexProfile !== undefined ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={isConnecting || removingEnvironmentId === environmentId}
+                  onClick={() => onSyncCodexProfile(sshTarget)}
+                  aria-label={`Sync Codex profile to ${environment.label}`}
+                >
+                  Sync Codex
+                </Button>
+              ) : null}
               {!isConnected ? (
                 <Button
                   size="xs"
@@ -1828,6 +1842,7 @@ export function ConnectionsSettings() {
   const [savedBackendSshPort, setSavedBackendSshPort] = useState("");
   const [savedBackendError, setSavedBackendError] = useState<string | null>(null);
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
+  const [codexSyncTarget, setCodexSyncTarget] = useState<DesktopSshEnvironmentTarget | null>(null);
   const [removingSavedEnvironmentId, setRemovingSavedEnvironmentId] =
     useState<EnvironmentId | null>(null);
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
@@ -2286,6 +2301,10 @@ export function ConnectionsSettings() {
     },
     [removeEnvironment],
   );
+
+  const handleOpenCodexProfileSync = useCallback((target: DesktopSshEnvironmentTarget) => {
+    setCodexSyncTarget(target);
+  }, []);
 
   const handleConnectSshHost = useCallback(
     async (target: DesktopSshEnvironmentTarget, label?: string) => {
@@ -3451,6 +3470,7 @@ export function ConnectionsSettings() {
             removingEnvironmentId={removingSavedEnvironmentId}
             onConnect={handleConnectSavedBackend}
             onRemove={handleRemoveSavedBackend}
+            {...(desktopBridge ? { onSyncCodexProfile: handleOpenCodexProfileSync } : {})}
           />
         ))}
         <CloudRemoteEnvironmentRows
@@ -3458,6 +3478,13 @@ export function ConnectionsSettings() {
           savedEnvironments={savedEnvironments}
         />
       </SettingsSection>
+      <CodexProfileSyncDialog
+        target={codexSyncTarget}
+        open={codexSyncTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setCodexSyncTarget(null);
+        }}
+      />
     </SettingsPageContainer>
   );
 }

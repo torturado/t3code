@@ -93,6 +93,12 @@ import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import type { ClientSettings } from "./settings.ts";
 import type { EditorId } from "./editor.ts";
+import { CodexProfileSyncOptionsSchema } from "./codexProfile.ts";
+import type {
+  CodexProfileSyncOptions,
+  DesktopCodexProfileInspection,
+  DesktopCodexProfileSyncResult,
+} from "./codexProfile.ts";
 import type {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -367,6 +373,15 @@ export const DesktopSshEnvironmentEnsureResultSchema = Schema.Union([
   DesktopSshEnvironmentBootstrapSchema,
   DesktopSshPasswordPromptCancelledResultSchema,
 ]);
+
+export const DesktopCodexProfileInspectInputSchema = Schema.Struct({
+  target: DesktopSshEnvironmentTargetSchema,
+});
+
+export const DesktopCodexProfileSyncInputSchema = Schema.Struct({
+  target: DesktopSshEnvironmentTargetSchema,
+  options: CodexProfileSyncOptionsSchema,
+});
 
 export const DesktopSshHttpBaseUrlInputSchema = Schema.Struct({
   httpBaseUrl: Schema.String,
@@ -1062,6 +1077,13 @@ export interface DesktopBridge {
     options?: { issuePairingToken?: boolean },
   ) => Promise<DesktopSshEnvironmentBootstrap>;
   disconnectSshEnvironment: (target: DesktopSshEnvironmentTarget) => Promise<void>;
+  inspectCodexProfile: (
+    target: DesktopSshEnvironmentTarget,
+  ) => Promise<DesktopCodexProfileInspection>;
+  syncCodexProfile: (
+    target: DesktopSshEnvironmentTarget,
+    options: CodexProfileSyncOptions,
+  ) => Promise<DesktopCodexProfileSyncResult>;
   fetchSshEnvironmentDescriptor: (httpBaseUrl: string) => Promise<ExecutionEnvironmentDescriptor>;
   bootstrapSshBearerSession: (
     httpBaseUrl: string,

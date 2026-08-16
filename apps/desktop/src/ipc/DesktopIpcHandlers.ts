@@ -23,6 +23,7 @@ import {
   issueSshWebSocketTicket,
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
+import { inspectCodexProfile, syncCodexProfile } from "./methods/codexProfile.ts";
 import {
   checkForUpdate,
   downloadUpdate,
@@ -65,6 +66,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(discoverSshHosts);
   yield* ipc.handle(ensureSshEnvironment);
   yield* ipc.handle(disconnectSshEnvironment);
+  yield* ipc.handle(inspectCodexProfile);
+  yield* ipc.handle(syncCodexProfile);
   yield* ipc.handle(fetchSshEnvironmentDescriptor);
   yield* ipc.handle(bootstrapSshBearerSession);
   yield* ipc.handle(fetchSshSessionState);

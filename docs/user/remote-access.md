@@ -134,6 +134,24 @@ Use this when you want the desktop app to start or reuse T3 Code on another mach
 
 After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint. The remote host still owns the actual T3 server, projects, files, git state, terminals, and provider sessions.
 
+#### Syncing your global Codex setup
+
+For an SSH environment, the saved environment row has a **Sync Codex** action. It compares the
+global Codex profile on this computer with the one on the remote host and lets you explicitly copy:
+
+- `AGENTS.md` and `AGENTS.override.md`
+- skills under your global skills directory, limited to skill folders containing `SKILL.md`
+- `config.toml` when you opt in to the advanced option
+
+Authentication files, session data, and unrelated files are not included. `config.toml` is optional
+because it can contain machine-specific or sensitive settings, so review it before selecting it.
+The sync never deletes files from the remote host. Existing files are backed up in the remote Codex
+home before they are replaced, and the dialog reports the backup location when one is created.
+
+The action is currently available for desktop-managed SSH environments and is an explicit one-way
+push from this computer; it does not automatically keep profiles in sync. Custom `CODEX_HOME`
+locations are respected on both sides.
+
 SSH launch is a desktop feature because it needs local process and SSH access. Once the environment is paired and saved, it uses the same environment list and connection model as direct LAN, Tailscale, HTTPS, or future tunnel-backed environments.
 
 #### SSH Launch Troubleshooting

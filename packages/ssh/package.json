@@ -11,6 +11,10 @@
       "types": "./src/command.ts",
       "import": "./src/command.ts"
     },
+    "./codexProfile": {
+      "types": "./src/codexProfile.ts",
+      "import": "./src/codexProfile.ts"
+    },
     "./config": {
       "types": "./src/config.ts",
       "import": "./src/config.ts"

@@ -1,6 +1,8 @@
 import type {
+  CodexProfileSnapshot,
   DesktopSshEnvironmentBootstrap,
   DesktopSshEnvironmentTarget,
+  DesktopCodexProfileSyncResult,
 } from "@t3tools/contracts";
 import {
   describeReadinessCause,
@@ -28,6 +30,11 @@ import {
   SshPasswordPrompt,
   isSshAuthFailure,
 } from "./auth.ts";
+import {
+  applyRemoteCodexProfile,
+  inspectRemoteCodexProfile,
+  type CodexProfileApplyInput,
+} from "./codexProfile.ts";
 import {
   baseSshArgs,
   buildSshHostSpecEffect,
@@ -151,6 +158,17 @@ export interface SshEnvironmentManagerShape {
   readonly disconnectEnvironment: (
     target: DesktopSshEnvironmentTarget,
   ) => Effect.Effect<void, SshEnvironmentEffectError, SshEnvironmentEffectContext>;
+  readonly inspectCodexProfile: (
+    target: DesktopSshEnvironmentTarget,
+  ) => Effect.Effect<CodexProfileSnapshot, SshEnvironmentEffectError, SshEnvironmentEffectContext>;
+  readonly applyCodexProfile: (
+    target: DesktopSshEnvironmentTarget,
+    input: CodexProfileApplyInput,
+  ) => Effect.Effect<
+    DesktopCodexProfileSyncResult,
+    SshEnvironmentEffectError,
+    SshEnvironmentEffectContext
+  >;
 }
 
 const RemoteLaunchResult = Schema.Struct({
@@ -1613,7 +1631,77 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     });
   });
 
-  return SshEnvironmentManager.of({ ensureEnvironment, disconnectEnvironment });
+  const inspectCodexProfile = Effect.fn("ssh/tunnel.inspectCodexProfile")(function* (
+    target: DesktopSshEnvironmentTarget,
+  ): Effect.fn.Return<
+    CodexProfileSnapshot,
+    SshEnvironmentEffectError,
+    SshEnvironmentEffectContext
+  > {
+    const baseResolved = yield* resolveSshTarget(target.alias || target.hostname);
+    const resolvedTarget: DesktopSshEnvironmentTarget = {
+      ...baseResolved,
+      ...(target.username !== null ? { username: target.username } : {}),
+      ...(target.port !== null ? { port: target.port } : {}),
+    };
+    const key = targetConnectionKey(resolvedTarget);
+    yield* Effect.logInfo("ssh.codexProfile.inspect.start", {
+      ...sshTargetLogFields(resolvedTarget),
+      key,
+    });
+    const snapshot = yield* runWithSshAuth({
+      key,
+      target: resolvedTarget,
+      operation: (authOptions) => inspectRemoteCodexProfile(resolvedTarget, authOptions),
+    });
+    yield* Effect.logInfo("ssh.codexProfile.inspect.succeeded", {
+      ...sshTargetLogFields(resolvedTarget),
+      key,
+      fileCount: snapshot.files.length,
+    });
+    return snapshot;
+  });
+
+  const applyCodexProfile = Effect.fn("ssh/tunnel.applyCodexProfile")(function* (
+    target: DesktopSshEnvironmentTarget,
+    input: CodexProfileApplyInput,
+  ): Effect.fn.Return<
+    DesktopCodexProfileSyncResult,
+    SshEnvironmentEffectError,
+    SshEnvironmentEffectContext
+  > {
+    const baseResolved = yield* resolveSshTarget(target.alias || target.hostname);
+    const resolvedTarget: DesktopSshEnvironmentTarget = {
+      ...baseResolved,
+      ...(target.username !== null ? { username: target.username } : {}),
+      ...(target.port !== null ? { port: target.port } : {}),
+    };
+    const key = targetConnectionKey(resolvedTarget);
+    yield* Effect.logInfo("ssh.codexProfile.apply.start", {
+      ...sshTargetLogFields(resolvedTarget),
+      key,
+      fileCount: input.files.length,
+    });
+    const result = yield* runWithSshAuth({
+      key,
+      target: resolvedTarget,
+      operation: (authOptions) => applyRemoteCodexProfile(resolvedTarget, input, authOptions),
+    });
+    yield* Effect.logInfo("ssh.codexProfile.apply.succeeded", {
+      ...sshTargetLogFields(resolvedTarget),
+      key,
+      fileCount: result.writtenFiles.length,
+      backupCreated: result.backupPath !== null,
+    });
+    return result;
+  });
+
+  return SshEnvironmentManager.of({
+    ensureEnvironment,
+    disconnectEnvironment,
+    inspectCodexProfile,
+    applyCodexProfile,
+  });
 });
 
 /**
