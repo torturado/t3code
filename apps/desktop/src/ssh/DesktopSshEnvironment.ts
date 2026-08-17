@@ -168,6 +168,40 @@ export const make = Effect.gen(function* () {
   const prompts = yield* DesktopSshPasswordPrompts.DesktopSshPasswordPrompts;
   const runtimeContext = yield* Effect.context<DesktopSshEnvironmentRuntimeServices>();
   const passwordPrompt = SshAuth.SshPasswordPrompt.of(makePasswordPrompt(prompts));
+  const inspectCodexProfile = Effect.fn("desktop.ssh.inspectCodexProfile")(function* (
+    target: DesktopSshEnvironmentTarget,
+  ) {
+    const local = yield* readLocalProfile();
+    const remote = yield* manager.inspectCodexProfile(target).pipe(
+      Effect.provideService(SshAuth.SshPasswordPrompt, passwordPrompt),
+      Effect.provide(runtimeContext),
+      Effect.map((snapshot) => ({ remote: snapshot, remoteError: null })),
+      Effect.catch((error) =>
+        Effect.succeed({
+          remote: null,
+          remoteError: remoteProfileErrorMessage(error),
+        }),
+      ),
+    );
+    return {
+      source: local.snapshot,
+      remote: remote.remote,
+      remoteError: remote.remoteError,
+    } satisfies DesktopCodexProfileInspection;
+  });
+  const syncCodexProfile = Effect.fn("desktop.ssh.syncCodexProfile")(function* (
+    target: DesktopSshEnvironmentTarget,
+    options: CodexProfileSyncOptions,
+  ) {
+    const local = yield* readLocalProfile();
+    const files = selectCodexProfileFiles(local.files, options);
+    return yield* manager
+      .applyCodexProfile(target, { files })
+      .pipe(
+        Effect.provideService(SshAuth.SshPasswordPrompt, passwordPrompt),
+        Effect.provide(runtimeContext),
+      );
+  });
 
   return DesktopSshEnvironment.of({
     discoverHosts: (input) =>
@@ -191,37 +225,8 @@ export const make = Effect.gen(function* () {
           Effect.provide(runtimeContext),
           Effect.withSpan("desktop.ssh.disconnectEnvironment"),
         ),
-    inspectCodexProfile: (target) =>
-      Effect.gen(function* () {
-        const local = yield* readLocalProfile();
-        const remote = yield* manager.inspectCodexProfile(target).pipe(
-          Effect.provideService(SshAuth.SshPasswordPrompt, passwordPrompt),
-          Effect.provide(runtimeContext),
-          Effect.map((snapshot) => ({ remote: snapshot, remoteError: null })),
-          Effect.catch((error) =>
-            Effect.succeed({
-              remote: null,
-              remoteError: remoteProfileErrorMessage(error),
-            }),
-          ),
-        );
-        return {
-          source: local.snapshot,
-          remote: remote.remote,
-          remoteError: remote.remoteError,
-        } satisfies DesktopCodexProfileInspection;
-      }).pipe(Effect.withSpan("desktop.ssh.inspectCodexProfile")),
-    syncCodexProfile: (target, options) =>
-      Effect.gen(function* () {
-        const local = yield* readLocalProfile();
-        const files = selectCodexProfileFiles(local.files, options);
-        return yield* manager
-          .applyCodexProfile(target, { files })
-          .pipe(
-            Effect.provideService(SshAuth.SshPasswordPrompt, passwordPrompt),
-            Effect.provide(runtimeContext),
-          );
-      }).pipe(Effect.withSpan("desktop.ssh.syncCodexProfile")),
+    inspectCodexProfile,
+    syncCodexProfile,
   });
 });
 

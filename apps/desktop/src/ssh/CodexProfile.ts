@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - The desktop main process reads the user's local Codex profile.
-import { createHash } from "node:crypto";
-import type { Dirent } from "node:fs";
-import { lstat, readdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import type {
   CodexProfileFileKind,
   CodexProfileFileSummary,
@@ -54,7 +54,7 @@ function describeInspectionError(relativePath: string, cause: unknown): string {
 
 function resolveCodexHome(homeDirectory: string, configuredCodexHome?: string): string {
   const value = (configuredCodexHome ?? process.env.CODEX_HOME ?? "").trim();
-  return resolve(homeDirectory, value || ".codex");
+  return NodePath.resolve(homeDirectory, value || ".codex");
 }
 
 async function addFile(
@@ -66,14 +66,14 @@ async function addFile(
   if (state.files.length >= CODEX_PROFILE_MAX_FILES) return;
 
   try {
-    const stat = await lstat(absolutePath);
+    const stat = await NodeFSP.lstat(absolutePath);
     if (stat.isSymbolicLink()) {
       state.warnings.push(`Skipped symlink ${relativePath}.`);
       return;
     }
     if (!stat.isFile()) return;
 
-    const contents = await readFile(absolutePath);
+    const contents = await NodeFSP.readFile(absolutePath);
     if (contents.byteLength > CODEX_PROFILE_MAX_FILE_BYTES) {
       state.warnings.push(`Skipped oversized file ${relativePath}.`);
       return;
@@ -101,7 +101,7 @@ async function walkSkillDirectory(
 
   let entries;
   try {
-    entries = await readdir(absolutePath, { withFileTypes: true });
+    entries = await NodeFSP.readdir(absolutePath, { withFileTypes: true });
   } catch (cause) {
     state.warnings.push(describeInspectionError(relativePath, cause));
     return;
@@ -110,7 +110,7 @@ async function walkSkillDirectory(
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
     if (state.files.length >= CODEX_PROFILE_MAX_FILES) return;
-    const nextPath = join(absolutePath, entry.name);
+    const nextPath = NodePath.join(absolutePath, entry.name);
     const nextRelativePath = `${relativePath}/${entry.name}`;
     if (entry.isSymbolicLink()) {
       state.warnings.push(`Skipped symlink ${nextRelativePath}.`);
@@ -127,13 +127,18 @@ async function listProfileFiles(
   skillsPath: string,
 ): Promise<MutableProfileFiles> {
   const state: MutableProfileFiles = { files: [], warnings: [] };
-  await addFile(state, join(codexHome, "AGENTS.md"), "AGENTS.md", "instructions");
-  await addFile(state, join(codexHome, "AGENTS.override.md"), "AGENTS.override.md", "instructions");
-  await addFile(state, join(codexHome, "config.toml"), "config.toml", "config");
+  await addFile(state, NodePath.join(codexHome, "AGENTS.md"), "AGENTS.md", "instructions");
+  await addFile(
+    state,
+    NodePath.join(codexHome, "AGENTS.override.md"),
+    "AGENTS.override.md",
+    "instructions",
+  );
+  await addFile(state, NodePath.join(codexHome, "config.toml"), "config.toml", "config");
 
-  let skillEntries: Dirent[];
+  let skillEntries: NodeFS.Dirent[];
   try {
-    skillEntries = await readdir(skillsPath, { withFileTypes: true });
+    skillEntries = await NodeFSP.readdir(skillsPath, { withFileTypes: true });
   } catch (cause) {
     if (errorCode(cause) !== "ENOENT") {
       state.warnings.push(describeInspectionError(".agents/skills", cause));
@@ -150,10 +155,10 @@ async function listProfileFiles(
     }
     if (!entry.isDirectory()) continue;
 
-    const skillPath = join(skillsPath, entry.name);
-    const manifestPath = join(skillPath, "SKILL.md");
+    const skillPath = NodePath.join(skillsPath, entry.name);
+    const manifestPath = NodePath.join(skillPath, "SKILL.md");
     try {
-      const manifestStat = await lstat(manifestPath);
+      const manifestStat = await NodeFSP.lstat(manifestPath);
       if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) continue;
     } catch (cause) {
       if (errorCode(cause) !== "ENOENT") {
@@ -177,16 +182,16 @@ function summarizeFile(file: CodexProfileWriteFile): CodexProfileFileSummary {
     path: file.path,
     kind: file.kind,
     size: contents.byteLength,
-    sha256: createHash("sha256").update(contents).digest("hex"),
+    sha256: NodeCrypto.createHash("sha256").update(contents).digest("hex"),
   };
 }
 
 export async function readLocalCodexProfile(
   options: ReadLocalCodexProfileOptions = {},
 ): Promise<LocalCodexProfile> {
-  const homeDirectory = resolve(options.homeDirectory ?? homedir());
+  const homeDirectory = NodePath.resolve(options.homeDirectory ?? NodeOS.homedir());
   const codexHome = resolveCodexHome(homeDirectory, options.codexHome);
-  const skillsPath = join(homeDirectory, ".agents", "skills");
+  const skillsPath = NodePath.join(homeDirectory, ".agents", "skills");
   const listed = await listProfileFiles(codexHome, skillsPath);
   const snapshot: CodexProfileSnapshot = {
     homePath: homeDirectory,

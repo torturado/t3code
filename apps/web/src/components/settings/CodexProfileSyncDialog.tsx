@@ -19,6 +19,7 @@ import {
 } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { diffCodexProfiles } from "./CodexProfileSyncDialog.logic";
 
 interface CodexProfileSyncDialogProps {
@@ -59,12 +60,16 @@ function ProfileSummary({ label, snapshot }: { label: string; snapshot: CodexPro
           {snapshot.files.length} {snapshot.files.length === 1 ? "file" : "files"}
         </span>
       </div>
-      <p
-        className="mt-1 truncate font-mono text-[11px] text-muted-foreground"
-        title={snapshot.codexHomePath}
-      >
-        {snapshot.codexHomePath}
-      </p>
+      <Tooltip>
+        <TooltipTrigger
+          render={<p className="mt-1 truncate font-mono text-[11px] text-muted-foreground" />}
+        >
+          {snapshot.codexHomePath}
+        </TooltipTrigger>
+        <TooltipPopup side="top" className="max-w-96 break-all">
+          {snapshot.codexHomePath}
+        </TooltipPopup>
+      </Tooltip>
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         {Object.entries(KIND_LABELS).map(([kind, kindLabel]) => (
           <span key={kind}>
