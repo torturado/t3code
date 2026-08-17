@@ -28,6 +28,10 @@ class FakeElement {
     return this.tagName.toLowerCase();
   }
 
+  get className(): string {
+    return this.classNames.join(" ");
+  }
+
   get textContent(): string {
     return this.childNodes.map((child) => child.textContent).join("");
   }
@@ -38,6 +42,23 @@ class FakeElement {
   }
 
   getAttribute(): string | null {
+    return null;
+  }
+
+  closest(): null {
+    return null;
+  }
+
+  querySelector(selector: string): FakeElement | null {
+    if (selector === "code") {
+      for (const child of this.childNodes) {
+        if (child instanceof FakeElement) {
+          if (child.tagName === "CODE") return child;
+          const nested = child.querySelector(selector);
+          if (nested) return nested;
+        }
+      }
+    }
     return null;
   }
 
@@ -91,5 +112,36 @@ describe("serializeRenderedMarkdownFragment", () => {
     const container = new FakeElement("DIV").append(code);
 
     expect(serializeRenderedMarkdownFragment(asNode(container))).toBe("first line\nsecond line");
+  });
+
+  it("keeps a code-only fragment plain when the cloned pre includes only the selection", () => {
+    const pre = new FakeElement("PRE").append(
+      new FakeElement("CODE").append(
+        shikiCodeLine("git fetch upstream"),
+        new FakeText("\n"),
+        shikiCodeLine("git rebase upstream/main"),
+        new FakeText("\n"),
+        shikiCodeLine("git push --force-with-lease origin main"),
+      ),
+    );
+    const container = new FakeElement("DIV").append(pre);
+
+    expect(serializeRenderedMarkdownFragment(asNode(container))).toBe(
+      "git fetch upstream\ngit rebase upstream/main\ngit push --force-with-lease origin main",
+    );
+  });
+
+  it("keeps fences when a code block is copied together with surrounding text", () => {
+    const pre = new FakeElement("PRE").append(
+      new FakeElement("CODE").append(shikiCodeLine("git status")),
+    );
+    const container = new FakeElement("DIV").append(
+      new FakeElement("P").append(new FakeText("Run this:")),
+      pre,
+    );
+
+    expect(serializeRenderedMarkdownFragment(asNode(container))).toBe(
+      "Run this:\n\n```\ngit status\n```",
+    );
   });
 });
