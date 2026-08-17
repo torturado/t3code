@@ -29,4 +29,13 @@ describe("OhMyPiAcpSupport", () => {
       ).args,
     ).toEqual(["--profile", "work", "--mode", "rpc", "--resume", "session-1"]);
   });
+
+  it("preserves Oh My Pi's native agent directory when no override is supplied", () => {
+    expect(
+      buildOhMyPiAcpSpawnInput({ binaryPath: "omp", launchArgs: "" }, "/workspace/project", {
+        PATH: "/bin",
+        PI_CODING_AGENT_DIR: "/home/user/.omp/agent",
+      }).env,
+    ).toEqual({ PATH: "/bin", PI_CODING_AGENT_DIR: "/home/user/.omp/agent" });
+  });
 });

@@ -41,8 +41,6 @@ import {
 
 const decodeOhMyPiSettings = Schema.decodeSync(OhMyPiSettings);
 const DRIVER_KIND = ProviderDriverKind.make("ohMyPi");
-const OMP_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const DERIVED_AGENT_DIR_NAME = "oh-my-pi";
 
 const UPDATE = makeStaticProviderMaintenanceResolver(
   makeManualOnlyProviderMaintenanceCapabilities({
@@ -80,10 +78,7 @@ const withInstanceIdentity =
 
 function resolveAgentDir(input: {
   readonly settings: OhMyPiSettings;
-  readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string;
-  readonly stateDir: string;
-  readonly instanceId: string;
   readonly path: Path.Path;
 }): string | undefined {
   const configured = input.settings.agentDir.trim();
@@ -91,16 +86,10 @@ function resolveAgentDir(input: {
     return input.path.resolve(input.cwd, expandHomePath(configured));
   }
 
-  // An explicitly supplied native environment remains authoritative when the
-  // settings field is empty. Otherwise each instance gets an isolated T3 home.
-  if (input.environment[OMP_AGENT_DIR_ENV]?.trim()) return undefined;
-  return input.path.join(
-    input.stateDir,
-    "providers",
-    DERIVED_AGENT_DIR_NAME,
-    input.instanceId,
-    "agent",
-  );
+  // Preserve Oh My Pi's native agent directory when no override is configured.
+  // That is where its credentials, model catalog, and provider configuration
+  // live. An explicit agentDir still gives each instance an isolated setup.
+  return undefined;
 }
 
 export const OhMyPiDriver: ProviderDriver<OhMyPiSettings, OhMyPiDriverEnv> = {
@@ -125,10 +114,7 @@ export const OhMyPiDriver: ProviderDriver<OhMyPiSettings, OhMyPiDriverEnv> = {
       const effectiveConfig = { ...config, enabled } satisfies OhMyPiSettings;
       const agentDir = resolveAgentDir({
         settings: effectiveConfig,
-        environment: processEnv,
         cwd: serverConfig.cwd,
-        stateDir: serverConfig.stateDir,
-        instanceId,
         path,
       });
 

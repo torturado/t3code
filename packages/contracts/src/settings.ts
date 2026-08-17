@@ -528,9 +528,9 @@ export const OhMyPiSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Agent directory",
         description:
-          "Directory for Oh My Pi configuration, credentials, models, skills, and sessions. Leave blank for an isolated T3-managed directory per instance.",
+          "Directory for Oh My Pi configuration, credentials, models, skills, and sessions. Leave blank to use Oh My Pi's native directory.",
         providerSettingsForm: {
-          placeholder: "Automatic per-instance directory",
+          placeholder: "Oh My Pi native directory",
           clearWhenEmpty: "omit",
         },
       }),
