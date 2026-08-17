@@ -40,6 +40,23 @@ const OH_MY_PI_PRESENTATION = {
 
 const EMPTY_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 
+type SelectConfigOption = Extract<EffectAcpSchema.SessionConfigOption, { readonly type: "select" }>;
+
+function isModelConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
+  return option.id.trim() === "model" || option.category === "model";
+}
+
+function selectConfigOptionValues(option: SelectConfigOption) {
+  return option.options.flatMap((entry) =>
+    "value" in entry
+      ? [entry]
+      : entry.options.map((groupOption) => ({
+          ...groupOption,
+          name: entry.name + ": " + groupOption.name,
+        })),
+  );
+}
+
 function modelCapabilitiesFromConfigOptions(
   options: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
 ): ModelCapabilities {
@@ -47,7 +64,7 @@ function modelCapabilitiesFromConfigOptions(
   for (const option of options ?? []) {
     const id = option.id.trim();
     const label = option.name.trim() || id;
-    if (!id || id === "model" || id === "mode" || option.category === "model") {
+    if (!id || isModelConfigOption(option) || id === "mode") {
       continue;
     }
     if (option.type === "boolean") {
@@ -62,14 +79,7 @@ function modelCapabilitiesFromConfigOptions(
       );
       continue;
     }
-    const values = option.options.flatMap((entry) =>
-      "value" in entry
-        ? [entry]
-        : entry.options.map((groupOption) => ({
-            ...groupOption,
-            name: entry.name + ": " + groupOption.name,
-          })),
-    );
+    const values = selectConfigOptionValues(option);
     const description = option.description?.trim();
     optionDescriptors.push(
       buildSelectOptionDescriptor({
@@ -91,6 +101,45 @@ function modelCapabilitiesFromConfigOptions(
   return createModelCapabilities({ optionDescriptors });
 }
 
+function modelsFromConfigOption(
+  option: EffectAcpSchema.SessionConfigOption | undefined,
+  capabilities: ModelCapabilities,
+): ReadonlyArray<ServerProviderModel> {
+  if (!option || option.type !== "select" || !isModelConfigOption(option)) {
+    return [];
+  }
+
+  const currentModelId = option.currentValue.trim();
+  const seen = new Set<string>();
+  const models = selectConfigOptionValues(option).flatMap((value) => {
+    const slug = value.value.trim();
+    if (!slug || seen.has(slug)) return [];
+    seen.add(slug);
+    return [
+      {
+        slug,
+        name: value.name.trim() || slug,
+        isCustom: false,
+        ...(slug === currentModelId ? { isDefault: true } : {}),
+        capabilities,
+      },
+    ];
+  });
+
+  return currentModelId && !seen.has(currentModelId)
+    ? [
+        ...models,
+        {
+          slug: currentModelId,
+          name: currentModelId,
+          isCustom: false,
+          isDefault: true,
+          capabilities,
+        },
+      ]
+    : models;
+}
+
 export function buildOhMyPiModelsFromSessionSetup(
   setup:
     | {
@@ -102,7 +151,7 @@ export function buildOhMyPiModelsFromSessionSetup(
 ): ReadonlyArray<ServerProviderModel> {
   const models = setup?.models;
   const capabilities = modelCapabilitiesFromConfigOptions(setup?.configOptions);
-  const builtInModels =
+  const modelsFromSessionState =
     models?.availableModels.flatMap((model) => {
       const slug = model.modelId.trim();
       if (!slug) return [];
@@ -116,17 +165,25 @@ export function buildOhMyPiModelsFromSessionSetup(
         },
       ];
     }) ?? [];
+  const modelConfigOption = setup?.configOptions?.find(isModelConfigOption);
+  const builtInModels =
+    modelsFromSessionState.length > 0
+      ? modelsFromSessionState
+      : modelsFromConfigOption(modelConfigOption, capabilities);
   const currentModelId = models?.currentModelId.trim();
-  if (builtInModels.length === 0 && currentModelId) {
-    builtInModels.push({
-      slug: currentModelId,
-      name: currentModelId,
-      isCustom: false,
-      isDefault: true,
-      capabilities,
-    });
-  }
-  return providerModelsFromSettings(builtInModels, customModels, capabilities);
+  const builtInModelsWithCurrent =
+    builtInModels.length === 0 && currentModelId
+      ? [
+          {
+            slug: currentModelId,
+            name: currentModelId,
+            isCustom: false,
+            isDefault: true,
+            capabilities,
+          },
+        ]
+      : builtInModels;
+  return providerModelsFromSettings(builtInModelsWithCurrent, customModels, capabilities);
 }
 
 export function buildInitialOhMyPiProviderSnapshot(
