@@ -40,6 +40,10 @@ export interface ProviderThreadTurnSnapshot {
 export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
+  /**
+   * Updated provider cursor when a native rollback creates a new session.
+   */
+  readonly session?: ProviderSession;
 }
 
 export interface ProviderAdapterShape<TError> {

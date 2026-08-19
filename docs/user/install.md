@@ -61,6 +61,7 @@ to use, then authenticate it.
 | Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`         |
 | Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`          |
 | OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login` |
+| Oh My Pi   | [Oh My Pi](https://github.com/can1357/oh-my-pi)       | `omp`          | Native Oh My Pi auth  |
 
 Cursor is the one to watch: install Cursor CLI, which provides the `cursor-agent` binary that
 T3 Code looks for, but authenticate with `agent login`, not `cursor-agent login`.
@@ -82,7 +83,8 @@ T3 Code. You can install T3 Code, open it, and add providers afterwards. A provi
 authenticated shows its status in **Settings** and fails at session start with the login command
 to run.
 
-For multi-account setups, see [Codex](./providers-codex.md) and [Claude](./providers-claude.md).
+For multi-account setups, see [Codex](./providers-codex.md) and [Claude](./providers-claude.md). For
+Oh My Pi configuration, see [Oh My Pi](./providers-oh-my-pi.md).
 
 ## Next Steps
 
