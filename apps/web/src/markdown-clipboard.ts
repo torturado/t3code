@@ -53,6 +53,42 @@ function isBlockCodeElement(element: Element, content: string): boolean {
   return false;
 }
 
+/**
+ * A range can clone a partial `pre` even when its common ancestor is the
+ * surrounding markdown container (for example, when the drag ends just past
+ * the last line). If the fragment has no selectable text outside those code
+ * blocks, it is still a code-only selection and must not gain Markdown fences.
+ */
+function codeOnlyFragmentText(container: Node): string | null {
+  let hasCodeText = false;
+  let hasOtherText = false;
+  let codeText = "";
+
+  const visit = (node: Node, insideCodeBlock: boolean) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? "";
+      if (insideCodeBlock) {
+        codeText += text;
+        hasCodeText ||= text.trim().length > 0;
+      } else {
+        hasOtherText ||= text.trim().length > 0;
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const element = node as Element;
+    if (isSkippedElement(element)) return;
+    const nextInsideCodeBlock = insideCodeBlock || element.tagName === "PRE";
+    for (const child of element.childNodes) {
+      visit(child, nextInsideCodeBlock);
+    }
+  };
+
+  visit(container, false);
+  return hasCodeText && !hasOtherText ? codeText : null;
+}
+
 function wrapInlineCode(code: string): string {
   const longestRun = [...(code.match(/`+/g) ?? [])].reduce(
     (max, run) => Math.max(max, run.length),
@@ -268,6 +304,8 @@ function tidyMarkdown(markdown: string): string {
 }
 
 export function serializeRenderedMarkdownFragment(container: Node): string {
+  const codeText = codeOnlyFragmentText(container);
+  if (codeText !== null) return codeText;
   return tidyMarkdown(serializeChildren(container));
 }
 
