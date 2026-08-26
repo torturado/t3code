@@ -346,6 +346,9 @@ export function useSelectedThreadGitActions() {
             action: input.action,
             ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
             ...(userRequest ? { userRequest } : {}),
+            ...(input.pushRemoteName ? { pushRemoteName: input.pushRemoteName } : {}),
+            ...(input.prRepository ? { prRepository: input.prRepository } : {}),
+            ...(input.prBaseBranch ? { prBaseBranch: input.prBaseBranch } : {}),
             ...(input.featureBranch ? { featureBranch: input.featureBranch } : {}),
             ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
           });

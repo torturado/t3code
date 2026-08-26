@@ -501,6 +501,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           args: [
             "pr",
             "list",
+            ...(input.repository ? ["--repo", input.repository] : []),
             "--head",
             input.headSelector,
             "--state",
@@ -524,6 +525,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           args: [
             "pr",
             "create",
+            ...(input.repository ? ["--repo", input.repository] : []),
             "--base",
             input.baseBranch,
             "--head",
@@ -588,6 +590,9 @@ function runStackedAction(
     actionId?: string;
     commitMessage?: string;
     userRequest?: string;
+    pushRemoteName?: string;
+    prRepository?: string;
+    prBaseBranch?: string;
     featureBranch?: boolean;
     filePaths?: readonly string[];
   },
@@ -2121,6 +2126,55 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           ),
         ).toBe(true);
       }),
+  );
+
+  it.effect("publishes to the selected remote and PR repository", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/selected-destination"]);
+      const originDir = yield* createBareRemote();
+      const upstreamDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["remote", "add", "upstream", upstreamDir]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "feature.txt"), "selected destination\n");
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/selected-destination": "[]",
+          },
+        },
+      });
+
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit_push_pr",
+        pushRemoteName: "upstream",
+        prRepository: "pingdotgg/t3code",
+        prBaseBranch: "main",
+      });
+
+      expect(result.push.status).toBe("pushed");
+      expect(result.pr.status).toBe("created");
+      expect(
+        yield* runGit(repoDir, ["rev-parse", "--abbrev-ref", "@{upstream}"]).pipe(
+          Effect.map((output) => output.stdout.trim()),
+        ),
+      ).toBe("upstream/feature/selected-destination");
+      expect(
+        ghCalls.some((call) =>
+          call.includes("pr list --repo pingdotgg/t3code --head feature/selected-destination"),
+        ),
+      ).toBe(true);
+      expect(
+        ghCalls.some((call) =>
+          call.includes(
+            "pr create --repo pingdotgg/t3code --base main --head feature/selected-destination",
+          ),
+        ),
+      ).toBe(true);
+    }),
   );
 
   it.effect("skips push when branch is already up to date", () =>

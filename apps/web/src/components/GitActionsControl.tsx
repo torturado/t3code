@@ -109,6 +109,9 @@ interface PendingDefaultBranchAction {
   branchName: string;
   includesCommit: boolean;
   commitMessage?: string;
+  pushRemoteName?: string;
+  prRepository?: string;
+  prBaseBranch?: string;
   onConfirmed?: () => void;
   filePaths?: string[];
 }
@@ -135,6 +138,9 @@ interface ActiveGitActionProgress {
 interface RunGitActionWithToastInput {
   action: GitStackedAction;
   commitMessage?: string;
+  pushRemoteName?: string;
+  prRepository?: string;
+  prBaseBranch?: string;
   onConfirmed?: () => void;
   skipDefaultBranchPrompt?: boolean;
   statusOverride?: VcsStatusResult | null;
@@ -304,7 +310,7 @@ function getMenuActionDisabledReason({
       return "Branch is behind upstream. Pull/rebase before pushing.";
     }
     if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
-      return 'Add an "origin" remote before pushing.';
+      return "Add a writable remote before pushing.";
     }
     if (!isAhead) {
       return "No local commits to push.";
@@ -322,7 +328,7 @@ function getMenuActionDisabledReason({
     return `Commit local changes before creating a ${terminology.singular}.`;
   }
   if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
-    return `Add an "origin" remote before creating a ${terminology.singular}.`;
+    return `Add a writable remote before creating a ${terminology.singular}.`;
   }
   if (!isAhead) {
     return `No local commits to include in a ${terminology.singular}.`;
@@ -336,6 +342,26 @@ function getMenuActionDisabledReason({
 const COMMIT_DIALOG_TITLE = "Commit changes";
 const COMMIT_DIALOG_DESCRIPTION =
   "Review and confirm your commit. Leave the message blank to auto-generate one.";
+
+function actionIncludesCommit(action: GitStackedAction): boolean {
+  return action === "commit" || action === "commit_push" || action === "commit_push_pr";
+}
+
+function actionIncludesPush(action: GitStackedAction): boolean {
+  return action !== "commit";
+}
+
+function actionIncludesPullRequest(action: GitStackedAction): boolean {
+  return action === "create_pr" || action === "commit_push_pr";
+}
+
+function actionLabel(action: GitStackedAction, shortChangeRequestLabel: string): string {
+  if (action === "commit") return "Commit";
+  if (action === "push") return "Push";
+  if (action === "create_pr") return `Push & create ${shortChangeRequestLabel}`;
+  if (action === "commit_push") return "Commit & push";
+  return `Commit, push & create ${shortChangeRequestLabel}`;
+}
 
 function GitActionItemIcon({
   icon,
@@ -1021,7 +1047,11 @@ export default function GitActionsControl({
   }, [activeServerThread]);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
+  const [dialogAction, setDialogAction] = useState<GitStackedAction>("commit");
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
+  const [dialogPushRemoteName, setDialogPushRemoteName] = useState("origin");
+  const [dialogPrRepository, setDialogPrRepository] = useState("");
+  const [dialogPrBaseBranch, setDialogPrBaseBranch] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
@@ -1128,6 +1158,37 @@ export default function GitActionsControl({
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
+  const dialogWillCommit =
+    actionIncludesCommit(dialogAction) &&
+    (dialogAction === "commit" || gitStatusForActions?.hasWorkingTreeChanges === true);
+  const dialogIncludesPush = actionIncludesPush(dialogAction);
+  const dialogIncludesPullRequest = actionIncludesPullRequest(dialogAction);
+  const dialogTitle = dialogWillCommit ? COMMIT_DIALOG_TITLE : "Review source control action";
+  const dialogDescription = dialogWillCommit
+    ? COMMIT_DIALOG_DESCRIPTION
+    : "Review where this action will publish the current branch.";
+  const dialogSubmitLabel = actionLabel(dialogAction, changeRequestTerminology.shortLabel);
+
+  const resetGitActionDialog = () => {
+    setIsCommitDialogOpen(false);
+    setDialogCommitMessage("");
+    setDialogPushRemoteName("origin");
+    setDialogPrRepository("");
+    setDialogPrBaseBranch("");
+    setExcludedFiles(new Set());
+    setIsEditingFiles(false);
+  };
+
+  const openGitActionDialog = (action: GitStackedAction) => {
+    setDialogAction(action);
+    setDialogCommitMessage("");
+    setDialogPushRemoteName("origin");
+    setDialogPrRepository("");
+    setDialogPrBaseBranch("");
+    setExcludedFiles(new Set());
+    setIsEditingFiles(false);
+    setIsCommitDialogOpen(true);
+  };
 
   const initAction = useVcsInitAction(sourceControlScope);
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
@@ -1278,6 +1339,9 @@ export default function GitActionsControl({
     async ({
       action,
       commitMessage,
+      pushRemoteName,
+      prRepository,
+      prBaseBranch,
       onConfirmed,
       skipDefaultBranchPrompt = false,
       statusOverride,
@@ -1311,6 +1375,9 @@ export default function GitActionsControl({
           branchName: actionBranch,
           includesCommit,
           ...(commitMessage ? { commitMessage } : {}),
+          ...(pushRemoteName ? { pushRemoteName } : {}),
+          ...(prRepository ? { prRepository } : {}),
+          ...(prBaseBranch ? { prBaseBranch } : {}),
           ...(onConfirmed ? { onConfirmed } : {}),
           ...(filePaths ? { filePaths } : {}),
         });
@@ -1323,6 +1390,7 @@ export default function GitActionsControl({
         hasCustomCommitMessage: !!commitMessage?.trim(),
         hasWorkingTreeChanges: !!actionStatus?.hasWorkingTreeChanges,
         featureBranch,
+        ...(pushRemoteName ? { pushTarget: pushRemoteName } : {}),
         terminology: changeRequestTerminology,
         shouldPushBeforePr:
           action === "create_pr" &&
@@ -1423,6 +1491,9 @@ export default function GitActionsControl({
         action,
         ...(commitMessage ? { commitMessage } : {}),
         ...(sourceControlUserRequest ? { userRequest: sourceControlUserRequest } : {}),
+        ...(pushRemoteName ? { pushRemoteName } : {}),
+        ...(prRepository ? { prRepository } : {}),
+        ...(prBaseBranch ? { prBaseBranch } : {}),
         ...(featureBranch ? { featureBranch } : {}),
         ...(filePaths ? { filePaths } : {}),
         onProgress: applyProgressEvent,
@@ -1512,11 +1583,22 @@ export default function GitActionsControl({
 
   const continuePendingDefaultBranchAction = () => {
     if (!pendingDefaultBranchAction) return;
-    const { action, commitMessage, onConfirmed, filePaths } = pendingDefaultBranchAction;
+    const {
+      action,
+      commitMessage,
+      pushRemoteName,
+      prRepository,
+      prBaseBranch,
+      onConfirmed,
+      filePaths,
+    } = pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     void runGitActionWithToast({
       action,
       ...(commitMessage ? { commitMessage } : {}),
+      ...(pushRemoteName ? { pushRemoteName } : {}),
+      ...(prRepository ? { prRepository } : {}),
+      ...(prBaseBranch ? { prBaseBranch } : {}),
       ...(onConfirmed ? { onConfirmed } : {}),
       ...(filePaths ? { filePaths } : {}),
       skipDefaultBranchPrompt: true,
@@ -1525,11 +1607,22 @@ export default function GitActionsControl({
 
   const checkoutFeatureBranchAndContinuePendingAction = () => {
     if (!pendingDefaultBranchAction) return;
-    const { action, commitMessage, onConfirmed, filePaths } = pendingDefaultBranchAction;
+    const {
+      action,
+      commitMessage,
+      pushRemoteName,
+      prRepository,
+      prBaseBranch,
+      onConfirmed,
+      filePaths,
+    } = pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     void runGitActionWithToast({
       action,
       ...(commitMessage ? { commitMessage } : {}),
+      ...(pushRemoteName ? { pushRemoteName } : {}),
+      ...(prRepository ? { prRepository } : {}),
+      ...(prBaseBranch ? { prBaseBranch } : {}),
       ...(onConfirmed ? { onConfirmed } : {}),
       ...(filePaths ? { filePaths } : {}),
       featureBranch: true,
@@ -1538,13 +1631,10 @@ export default function GitActionsControl({
   };
 
   const runDialogActionOnNewBranch = () => {
-    if (!isCommitDialogOpen) return;
+    if (!isCommitDialogOpen || dialogAction !== "commit") return;
     const commitMessage = dialogCommitMessage.trim();
 
-    setIsCommitDialogOpen(false);
-    setDialogCommitMessage("");
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
+    resetGitActionDialog();
 
     void runGitActionWithToast({
       action: "commit",
@@ -1614,7 +1704,7 @@ export default function GitActionsControl({
       return;
     }
     if (quickAction.action) {
-      void runGitActionWithToast({ action: quickAction.action });
+      openGitActionDialog(quickAction.action);
     }
   };
 
@@ -1624,30 +1714,26 @@ export default function GitActionsControl({
       void openExistingPr();
       return;
     }
-    if (item.dialogAction === "push") {
-      void runGitActionWithToast({ action: "push" });
-      return;
+    if (item.dialogAction) {
+      openGitActionDialog(item.dialogAction);
     }
-    if (item.dialogAction === "create_pr") {
-      void runGitActionWithToast({ action: "create_pr" });
-      return;
-    }
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
-    setIsCommitDialogOpen(true);
   };
 
   const runDialogAction = () => {
     if (!isCommitDialogOpen) return;
-    const commitMessage = dialogCommitMessage.trim();
-    setIsCommitDialogOpen(false);
-    setDialogCommitMessage("");
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
+    const action = dialogAction;
+    const commitMessage = dialogWillCommit ? dialogCommitMessage.trim() : "";
+    const pushRemoteName = dialogPushRemoteName.trim();
+    const prRepository = dialogPrRepository.trim();
+    const prBaseBranch = dialogPrBaseBranch.trim();
+    resetGitActionDialog();
     void runGitActionWithToast({
-      action: "commit",
+      action,
       ...(commitMessage ? { commitMessage } : {}),
-      ...(!allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
+      ...(dialogIncludesPush && pushRemoteName ? { pushRemoteName } : {}),
+      ...(dialogIncludesPullRequest && prRepository ? { prRepository } : {}),
+      ...(dialogIncludesPullRequest && prBaseBranch ? { prBaseBranch } : {}),
+      ...(dialogWillCommit && !allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
     });
   };
 
@@ -1852,17 +1938,14 @@ export default function GitActionsControl({
         open={isCommitDialogOpen}
         onOpenChange={(open) => {
           if (!open) {
-            setIsCommitDialogOpen(false);
-            setDialogCommitMessage("");
-            setExcludedFiles(new Set());
-            setIsEditingFiles(false);
+            resetGitActionDialog();
           }
         }}
       >
         <DialogPopup>
           <DialogHeader>
-            <DialogTitle>{COMMIT_DIALOG_TITLE}</DialogTitle>
-            <DialogDescription>{COMMIT_DIALOG_DESCRIPTION}</DialogDescription>
+            <DialogTitle>{dialogTitle}</DialogTitle>
+            <DialogDescription>{dialogDescription}</DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-4">
             <div className="space-y-3 rounded-xl bg-zinc-25 p-3 text-sm ring-1 ring-black/5 dark:bg-white/[0.035] dark:ring-white/5">
@@ -1877,138 +1960,196 @@ export default function GitActionsControl({
                   )}
                 </span>
               </div>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {isEditingFiles && allFiles.length > 0 && (
-                      <Checkbox
-                        checked={allSelected}
-                        indeterminate={!allSelected && !noneSelected}
-                        onCheckedChange={() => {
-                          setExcludedFiles(
-                            allSelected ? new Set(allFiles.map((f) => f.path)) : new Set(),
-                          );
-                        }}
-                      />
-                    )}
-                    <span className="text-muted-foreground">Files</span>
-                    {!allSelected && !isEditingFiles && (
-                      <span className="text-muted-foreground">
-                        ({selectedFiles.length} of {allFiles.length})
+              {dialogIncludesPush ? (
+                <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+                  <span className="text-muted-foreground">Push</span>
+                  <span className="font-mono">
+                    {dialogPushRemoteName.trim() || "configured upstream"}/
+                    {gitStatusForActions?.refName ?? "current branch"}
+                  </span>
+                  {dialogIncludesPullRequest ? (
+                    <>
+                      <span className="text-muted-foreground">PR</span>
+                      <span className="font-mono">
+                        {dialogPrRepository.trim() || "provider default"}/
+                        {dialogPrBaseBranch.trim() || "provider default"}
                       </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              {dialogWillCommit ? (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {isEditingFiles && allFiles.length > 0 && (
+                        <Checkbox
+                          checked={allSelected}
+                          indeterminate={!allSelected && !noneSelected}
+                          onCheckedChange={() => {
+                            setExcludedFiles(
+                              allSelected ? new Set(allFiles.map((f) => f.path)) : new Set(),
+                            );
+                          }}
+                        />
+                      )}
+                      <span className="text-muted-foreground">Files</span>
+                      {!allSelected && !isEditingFiles && (
+                        <span className="text-muted-foreground">
+                          ({selectedFiles.length} of {allFiles.length})
+                        </span>
+                      )}
+                    </div>
+                    {allFiles.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setIsEditingFiles((prev) => !prev)}
+                      >
+                        {isEditingFiles ? "Done" : "Edit"}
+                      </Button>
                     )}
                   </div>
-                  {allFiles.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => setIsEditingFiles((prev) => !prev)}
-                    >
-                      {isEditingFiles ? "Done" : "Edit"}
-                    </Button>
+                  {!gitStatusForActions || allFiles.length === 0 ? (
+                    <p className="font-medium">none</p>
+                  ) : (
+                    <div className="space-y-2">
+                      <ScrollArea className="h-44 rounded-lg bg-card ring-1 ring-black/5 dark:bg-white/[0.025] dark:ring-white/5">
+                        <div className="space-y-1 p-1">
+                          {allFiles.map((file) => {
+                            const isExcluded = excludedFiles.has(file.path);
+                            return (
+                              <div
+                                key={file.path}
+                                className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
+                              >
+                                {isEditingFiles && (
+                                  <Checkbox
+                                    checked={!excludedFiles.has(file.path)}
+                                    onCheckedChange={() => {
+                                      setExcludedFiles((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(file.path)) {
+                                          next.delete(file.path);
+                                        } else {
+                                          next.add(file.path);
+                                        }
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+                                  onClick={() => openChangedFileInEditor(file.path)}
+                                >
+                                  <StartTruncatedPath
+                                    path={file.path}
+                                    className={`flex-1${isExcluded ? " text-muted-foreground" : ""}`}
+                                  />
+                                  <span className="shrink-0">
+                                    {isExcluded ? (
+                                      <span className="text-muted-foreground">Excluded</span>
+                                    ) : (
+                                      <>
+                                        <span className="text-success">+{file.insertions}</span>
+                                        <span className="text-muted-foreground"> / </span>
+                                        <span className="text-destructive">-{file.deletions}</span>
+                                      </>
+                                    )}
+                                  </span>
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </ScrollArea>
+                      <div className="flex justify-end font-mono">
+                        <span className="text-success">
+                          +{selectedFiles.reduce((sum, f) => sum + f.insertions, 0)}
+                        </span>
+                        <span className="text-muted-foreground"> / </span>
+                        <span className="text-destructive">
+                          -{selectedFiles.reduce((sum, f) => sum + f.deletions, 0)}
+                        </span>
+                      </div>
+                    </div>
                   )}
                 </div>
-                {!gitStatusForActions || allFiles.length === 0 ? (
-                  <p className="font-medium">none</p>
-                ) : (
-                  <div className="space-y-2">
-                    <ScrollArea className="h-44 rounded-lg bg-card ring-1 ring-black/5 dark:bg-white/[0.025] dark:ring-white/5">
-                      <div className="space-y-1 p-1">
-                        {allFiles.map((file) => {
-                          const isExcluded = excludedFiles.has(file.path);
-                          return (
-                            <div
-                              key={file.path}
-                              className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
-                            >
-                              {isEditingFiles && (
-                                <Checkbox
-                                  checked={!excludedFiles.has(file.path)}
-                                  onCheckedChange={() => {
-                                    setExcludedFiles((prev) => {
-                                      const next = new Set(prev);
-                                      if (next.has(file.path)) {
-                                        next.delete(file.path);
-                                      } else {
-                                        next.add(file.path);
-                                      }
-                                      return next;
-                                    });
-                                  }}
-                                />
-                              )}
-                              <button
-                                type="button"
-                                className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
-                                onClick={() => openChangedFileInEditor(file.path)}
-                              >
-                                <StartTruncatedPath
-                                  path={file.path}
-                                  className={`flex-1${isExcluded ? " text-muted-foreground" : ""}`}
-                                />
-                                <span className="shrink-0">
-                                  {isExcluded ? (
-                                    <span className="text-muted-foreground">Excluded</span>
-                                  ) : (
-                                    <>
-                                      <span className="text-success">+{file.insertions}</span>
-                                      <span className="text-muted-foreground"> / </span>
-                                      <span className="text-destructive">-{file.deletions}</span>
-                                    </>
-                                  )}
-                                </span>
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </ScrollArea>
-                    <div className="flex justify-end font-mono">
-                      <span className="text-success">
-                        +{selectedFiles.reduce((sum, f) => sum + f.insertions, 0)}
-                      </span>
-                      <span className="text-muted-foreground"> / </span>
-                      <span className="text-destructive">
-                        -{selectedFiles.reduce((sum, f) => sum + f.deletions, 0)}
-                      </span>
-                    </div>
+              ) : null}
+            </div>
+            {dialogIncludesPush ? (
+              <div className="space-y-3">
+                <label className="block space-y-1.5" htmlFor="git-action-push-remote">
+                  <span className="text-sm font-medium">Push remote</span>
+                  <Input
+                    id="git-action-push-remote"
+                    value={dialogPushRemoteName}
+                    onChange={(event) => setDialogPushRemoteName(event.target.value)}
+                    placeholder="origin"
+                  />
+                </label>
+                {dialogIncludesPullRequest ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block space-y-1.5" htmlFor="git-action-pr-repository">
+                      <span className="text-sm font-medium">PR repository</span>
+                      <Input
+                        id="git-action-pr-repository"
+                        value={dialogPrRepository}
+                        onChange={(event) => setDialogPrRepository(event.target.value)}
+                        placeholder="owner/repository"
+                      />
+                    </label>
+                    <label className="block space-y-1.5" htmlFor="git-action-pr-base-branch">
+                      <span className="text-sm font-medium">Base branch</span>
+                      <Input
+                        id="git-action-pr-base-branch"
+                        value={dialogPrBaseBranch}
+                        onChange={(event) => setDialogPrBaseBranch(event.target.value)}
+                        placeholder="main"
+                      />
+                    </label>
                   </div>
-                )}
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  {dialogIncludesPullRequest
+                    ? "Commits stay local. Leave the PR fields empty to use provider defaults."
+                    : "Commits stay local. This remote is only used to publish the branch."}
+                </p>
               </div>
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-medium">Commit message (optional)</p>
-              <Textarea
-                value={dialogCommitMessage}
-                onChange={(event) => setDialogCommitMessage(event.target.value)}
-                placeholder="Leave empty to auto-generate"
-                size="sm"
-              />
-            </div>
+            ) : null}
+            {dialogWillCommit ? (
+              <div className="space-y-1">
+                <label className="text-sm font-medium" htmlFor="git-action-commit-message">
+                  Commit message (optional)
+                </label>
+                <Textarea
+                  id="git-action-commit-message"
+                  value={dialogCommitMessage}
+                  onChange={(event) => setDialogCommitMessage(event.target.value)}
+                  placeholder="Leave empty to auto-generate"
+                  size="sm"
+                />
+              </div>
+            ) : null}
           </DialogPanel>
           <DialogFooter variant="bare">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setIsCommitDialogOpen(false);
-                setDialogCommitMessage("");
-                setExcludedFiles(new Set());
-                setIsEditingFiles(false);
-              }}
-            >
+            <Button variant="outline" size="sm" onClick={resetGitActionDialog}>
               Cancel
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={noneSelected}
-              onClick={runDialogActionOnNewBranch}
-            >
-              Commit on new refName
-            </Button>
-            <Button size="sm" disabled={noneSelected} onClick={runDialogAction}>
-              Commit
+            {dialogAction === "commit" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={noneSelected}
+                onClick={runDialogActionOnNewBranch}
+              >
+                Commit on new refName
+              </Button>
+            ) : null}
+            <Button size="sm" disabled={dialogWillCommit && noneSelected} onClick={runDialogAction}>
+              {dialogSubmitLabel}
             </Button>
           </DialogFooter>
         </DialogPopup>

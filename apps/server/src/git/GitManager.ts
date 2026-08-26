@@ -59,6 +59,7 @@ import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as SourceControlProvider from "../sourceControl/SourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import { detectPrTemplate } from "../sourceControl/PrTemplateDetection.ts";
 import type { ChangeRequest } from "@t3tools/contracts";
@@ -1270,6 +1271,7 @@ export const make = Effect.gen(function* () {
       | "headRepositoryOwnerLogin"
       | "isCrossRepository"
     >,
+    target?: SourceControlProvider.SourceControlRefSelector,
   ) {
     for (const headSelector of headContext.headSelectors) {
       const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
@@ -1277,8 +1279,14 @@ export const make = Effect.gen(function* () {
         headSelector,
         state: "open",
         limit: 1,
+        ...(target ? { target } : {}),
       });
-      const normalizedPullRequests = pullRequests.map(toPullRequestInfo);
+      const normalizedPullRequests = pullRequests
+        .filter(
+          (pullRequest) =>
+            target?.refName === undefined || pullRequest.baseRefName === target.refName,
+        )
+        .map(toPullRequestInfo);
 
       const firstPullRequest = normalizedPullRequests.find((pullRequest) =>
         matchesBranchHeadContext(pullRequest, headContext),
@@ -1428,7 +1436,11 @@ export const make = Effect.gen(function* () {
     branch: string,
     upstreamRef: string | null,
     headContext: Pick<BranchHeadContext, "isCrossRepository" | "remoteName">,
+    requestedBaseBranch?: string,
   ) {
+    const explicitBaseBranch = requestedBaseBranch?.trim();
+    if (explicitBaseBranch) return explicitBaseBranch;
+
     const configured = yield* gitCore.readConfigValue(cwd, `branch.${branch}.gh-merge-base`);
     if (configured) return configured;
 
@@ -1646,6 +1658,8 @@ export const make = Effect.gen(function* () {
     fallbackBranch: string | null,
     emit: GitActionProgressEmitter,
     userRequest?: string,
+    prRepository?: string,
+    prBaseBranch?: string,
   ) {
     const provider = yield* sourceControlProvider(cwd);
     const terms = getChangeRequestTerminologyForKind(provider.kind);
@@ -1671,7 +1685,17 @@ export const make = Effect.gen(function* () {
       upstreamRef: details.upstreamRef,
     });
 
-    const existing = yield* findOpenPr(cwd, headContext);
+    const baseBranch = yield* resolveBaseBranch(
+      cwd,
+      branch,
+      details.upstreamRef,
+      headContext,
+      prBaseBranch,
+    );
+    const target = prRepository?.trim()
+      ? { refName: baseBranch, repository: prRepository.trim() }
+      : undefined;
+    const existing = yield* findOpenPr(cwd, headContext, target);
     if (existing) {
       return {
         status: "opened_existing" as const,
@@ -1683,7 +1707,6 @@ export const make = Effect.gen(function* () {
       };
     }
 
-    const baseBranch = yield* resolveBaseBranch(cwd, branch, details.upstreamRef, headContext);
     yield* emit({
       kind: "phase_started",
       phase: "pr",
@@ -1735,12 +1758,13 @@ export const make = Effect.gen(function* () {
         cwd,
         baseRefName: baseBranch,
         headSelector: headContext.preferredHeadSelector,
+        ...(target ? { target } : {}),
         title: generated.title,
         bodyFile,
       })
       .pipe(Effect.ensuring(fileSystem.remove(bodyFile).pipe(Effect.catch(() => Effect.void))));
 
-    const created = yield* findOpenPr(cwd, headContext);
+    const created = yield* findOpenPr(cwd, headContext, target);
     if (!created) {
       return {
         status: "created" as const,
@@ -2271,7 +2295,11 @@ export const make = Effect.gen(function* () {
               })
               .pipe(
                 Effect.tap(() => Ref.set(currentPhase, Option.some("push"))),
-                Effect.flatMap(() => gitCore.pushCurrentBranch(input.cwd, currentBranch)),
+                Effect.flatMap(() =>
+                  gitCore.pushCurrentBranch(input.cwd, currentBranch, {
+                    ...(input.pushRemoteName ? { remoteName: input.pushRemoteName } : {}),
+                  }),
+                ),
               )
           : { status: "skipped_not_requested" as const };
 
@@ -2291,6 +2319,8 @@ export const make = Effect.gen(function* () {
                     currentBranch,
                     progress.emit,
                     input.userRequest,
+                    input.prRepository,
+                    input.prBaseBranch,
                   ),
                 ),
               )

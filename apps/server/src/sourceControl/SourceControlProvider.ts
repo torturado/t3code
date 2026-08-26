@@ -87,6 +87,7 @@ export class SourceControlProvider extends Context.Service<
       readonly cwd: string;
       readonly context?: SourceControlProviderContext;
       readonly source?: SourceControlRefSelector;
+      readonly target?: SourceControlRefSelector;
       readonly headSelector: string;
       readonly state: ChangeRequestState | "all";
       readonly limit?: number;

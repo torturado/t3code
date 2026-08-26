@@ -136,6 +136,7 @@ it.effect("uses gh json listing for non-open change request state queries", () =
     const changeRequests = yield* provider.listChangeRequests({
       cwd: "/repo",
       headSelector: "feature/merged",
+      target: { refName: "main", repository: "pingdotgg/t3code" },
       state: "all",
       limit: 10,
     });
@@ -143,6 +144,8 @@ it.effect("uses gh json listing for non-open change request state queries", () =
     assert.deepStrictEqual(executeArgs, [
       "pr",
       "list",
+      "--repo",
+      "pingdotgg/t3code",
       "--head",
       "feature/merged",
       "--state",
@@ -193,6 +196,7 @@ it.effect("creates GitHub PRs through provider-neutral input names", () =>
       cwd: "/repo",
       baseRefName: "main",
       headSelector: "owner:feature/provider",
+      target: { refName: "main", repository: "pingdotgg/t3code" },
       title: "Provider PR",
       bodyFile: "/tmp/body.md",
     });
@@ -201,6 +205,7 @@ it.effect("creates GitHub PRs through provider-neutral input names", () =>
       cwd: "/repo",
       baseBranch: "main",
       headSelector: "owner:feature/provider",
+      repository: "pingdotgg/t3code",
       title: "Provider PR",
       bodyFile: "/tmp/body.md",
     });

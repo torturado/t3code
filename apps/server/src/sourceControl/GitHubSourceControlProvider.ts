@@ -104,6 +104,7 @@ export const make = Effect.gen(function* () {
           .listOpenPullRequests({
             cwd: input.cwd,
             headSelector: input.headSelector,
+            ...(input.target?.repository ? { repository: input.target.repository } : {}),
             ...(input.limit !== undefined ? { limit: input.limit } : {}),
           })
           .pipe(
@@ -132,6 +133,7 @@ export const make = Effect.gen(function* () {
           args: [
             "pr",
             "list",
+            ...(input.target?.repository ? ["--repo", input.target.repository] : []),
             "--head",
             input.headSelector,
             "--state",
@@ -211,6 +213,7 @@ export const make = Effect.gen(function* () {
           cwd: input.cwd,
           baseBranch: input.baseRefName,
           headSelector: input.headSelector,
+          ...(input.target?.repository ? { repository: input.target.repository } : {}),
           title: input.title,
           bodyFile: input.bodyFile,
         })
