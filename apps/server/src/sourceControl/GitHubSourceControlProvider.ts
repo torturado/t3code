@@ -99,14 +99,11 @@ export const make = Effect.gen(function* () {
 
   const listChangeRequests: SourceControlProvider.SourceControlProvider["Service"]["listChangeRequests"] =
     (input) => {
-      const repository = input.targetRepository ?? input.target?.repository;
-
       if (input.state === "open") {
         return github
           .listOpenPullRequests({
             cwd: input.cwd,
             headSelector: input.headSelector,
-            ...(repository ? { repository } : {}),
             ...(input.limit !== undefined ? { limit: input.limit } : {}),
           })
           .pipe(
@@ -135,7 +132,6 @@ export const make = Effect.gen(function* () {
           args: [
             "pr",
             "list",
-            ...(repository ? ["--repo", repository] : []),
             "--head",
             input.headSelector,
             "--state",
@@ -215,7 +211,6 @@ export const make = Effect.gen(function* () {
           cwd: input.cwd,
           baseBranch: input.baseRefName,
           headSelector: input.headSelector,
-          ...(input.target?.repository ? { repository: input.target.repository } : {}),
           title: input.title,
           bodyFile: input.bodyFile,
         })

@@ -41,14 +41,7 @@ export type DefaultBranchConfirmableAction =
 
 export type GitActionRequestInput = Pick<
   GitRunStackedActionInput,
-  | "action"
-  | "commitMessage"
-  | "userRequest"
-  | "pushRemoteName"
-  | "prRepository"
-  | "prBaseBranch"
-  | "featureBranch"
-  | "filePaths"
+  "action" | "commitMessage" | "featureBranch" | "filePaths"
 >;
 
 export function buildGitActionProgressStages(input: {
@@ -214,7 +207,7 @@ export function resolveQuickAction(
         label: "Push",
         disabled: true,
         kind: "show_hint",
-        hint: "Add a writable remote before pushing or creating a PR.",
+        hint: 'Add an "origin" remote before pushing or creating a PR.',
       };
     }
     if (!isAhead) {
@@ -325,7 +318,7 @@ export function getGitActionDisabledReason(input: {
       return "Branch is behind upstream. Pull/rebase before pushing.";
     }
     if (!gitStatus.hasUpstream && !hasOriginRemote) {
-      return "Add a writable remote before pushing.";
+      return 'Add an "origin" remote before pushing.';
     }
     if (!isAhead) {
       return "No local commits to push.";
@@ -343,7 +336,7 @@ export function getGitActionDisabledReason(input: {
     return "Commit local changes before creating a PR.";
   }
   if (!gitStatus.hasUpstream && !hasOriginRemote) {
-    return "Add a writable remote before creating a PR.";
+    return 'Add an "origin" remote before creating a PR.';
   }
   if (!isAhead) {
     return "No local commits to include in a PR.";
