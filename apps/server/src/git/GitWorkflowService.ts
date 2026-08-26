@@ -11,7 +11,6 @@ import {
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
-  type VcsListRemotesResult,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type GitManagerServiceError,
@@ -63,9 +62,6 @@ export class GitWorkflowService extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
-    readonly listRemotes: (
-      input: VcsStatusInput,
-    ) => Effect.Effect<VcsListRemotesResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
@@ -301,42 +297,6 @@ export const make = Effect.gen(function* () {
       detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
-        ),
-      ),
-    listRemotes: (input) =>
-      registry.resolve({ cwd: input.cwd }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new GitCommandError({
-              operation: "GitWorkflowService.listRemotes",
-              command: "git remote -v",
-              cwd: input.cwd,
-              detail: cause.message,
-              cause,
-            }),
-        ),
-        Effect.flatMap((handle) =>
-          handle.kind !== "git"
-            ? Effect.fail(
-                new GitCommandError({
-                  operation: "GitWorkflowService.listRemotes",
-                  command: "git remote -v",
-                  cwd: input.cwd,
-                  detail: `The listRemotes command currently supports Git repositories only; detected ${handle.kind}.`,
-                }),
-              )
-            : handle.driver.listRemotes(input.cwd).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new GitCommandError({
-                      operation: "GitWorkflowService.listRemotes",
-                      command: "git remote -v",
-                      cwd: input.cwd,
-                      detail: cause.message,
-                      cause,
-                    }),
-                ),
-              ),
         ),
       ),
     createWorktree: (input) =>

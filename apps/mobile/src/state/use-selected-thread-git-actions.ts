@@ -24,7 +24,6 @@ import { setPendingConnectionError } from "./use-remote-environment-registry";
 import { useAtomCommand } from "./use-atom-command";
 import { showGitActionResult } from "./use-vcs-action-state";
 import { useThreadSelection } from "./use-thread-selection";
-import { useSelectedThreadDetail } from "./use-thread-detail";
 import { useSelectedThreadWorktree } from "./use-selected-thread-worktree";
 
 export function useSelectedThreadGitActions() {
@@ -37,7 +36,6 @@ export function useSelectedThreadGitActions() {
   const createWorktree = useAtomCommand(vcsEnvironment.createWorktree, { reportFailure: false });
   const pull = useAtomCommand(vcsEnvironment.pull, { reportFailure: false });
   const { selectedThread, selectedThreadProject } = useThreadSelection();
-  const selectedThreadDetail = useSelectedThreadDetail();
   const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
   const runStackedAction = useAtomCommand(
     vcsActionManager.runStackedAction({
@@ -48,20 +46,6 @@ export function useSelectedThreadGitActions() {
   );
 
   const selectedThreadGitRootCwd = selectedThreadProject?.workspaceRoot ?? null;
-  const sourceControlUserRequest = useMemo(() => {
-    if (!selectedThreadDetail) {
-      return undefined;
-    }
-
-    const request = selectedThreadDetail.messages
-      .filter((message) => message.role === "user")
-      .map((message) => message.text.trim())
-      .filter((message) => message.length > 0)
-      .join("\n\n")
-      .trim();
-
-    return request.length > 0 ? request.slice(0, 12_000) : undefined;
-  }, [selectedThreadDetail]);
   const branchTarget = useMemo(
     () => ({
       environmentId: selectedThread?.environmentId ?? null,
@@ -340,15 +324,10 @@ export function useSelectedThreadGitActions() {
         "run_change_request",
         "Running source control action",
         async ({ thread, cwd }) => {
-          const userRequest = input.userRequest ?? sourceControlUserRequest;
           const result = await runStackedAction({
             actionId,
             action: input.action,
             ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
-            ...(userRequest ? { userRequest } : {}),
-            ...(input.pushRemoteName ? { pushRemoteName: input.pushRemoteName } : {}),
-            ...(input.prRepository ? { prRepository: input.prRepository } : {}),
-            ...(input.prBaseBranch ? { prBaseBranch: input.prBaseBranch } : {}),
             ...(input.featureBranch ? { featureBranch: input.featureBranch } : {}),
             ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
           });
@@ -388,7 +367,6 @@ export function useSelectedThreadGitActions() {
       runStackedAction,
       refreshSelectedThreadGitStatus,
       runSelectedThreadGitMutation,
-      sourceControlUserRequest,
       selectedThreadWorktreePath,
       syncSelectedThreadBranchState,
     ],

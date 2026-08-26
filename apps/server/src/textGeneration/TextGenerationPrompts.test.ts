@@ -10,19 +10,6 @@ import { normalizeCliError, sanitizeThreadTitle } from "./TextGenerationUtils.ts
 import { TextGenerationError } from "@t3tools/contracts";
 
 describe("buildCommitMessagePrompt", () => {
-  it("asks the provider to discover applicable instructions and skills with read-only tools", () => {
-    const result = buildCommitMessagePrompt({
-      branch: "main",
-      stagedSummary: "M README.md",
-      stagedPatch: "diff",
-    });
-
-    expect(result.prompt).toContain("use the read-only tools available in this provider");
-    expect(result.prompt).toContain("do not assume a particular filename, skill name, or path");
-    expect(result.prompt).toContain("do not edit files, commit, push, create or update");
-    expect(result.prompt).not.toContain("file-pr");
-  });
-
   it("includes staged patch and summary in the prompt", () => {
     const result = buildCommitMessagePrompt({
       branch: "main",
@@ -79,18 +66,6 @@ describe("buildCommitMessagePrompt", () => {
     expect(result.prompt).toContain("Additional instructions:");
     expect(result.prompt).toContain("Use a terse repository-specific subject.");
   });
-
-  it("includes the user request as context when provided", () => {
-    const result = buildCommitMessagePrompt({
-      branch: "main",
-      stagedSummary: "M a.ts",
-      stagedPatch: "diff",
-      userRequest: "Fix the timeout users see when reconnecting.",
-    });
-
-    expect(result.prompt).toContain("User request context:");
-    expect(result.prompt).toContain("Fix the timeout users see when reconnecting.");
-  });
 });
 
 describe("buildPrContentPrompt", () => {
@@ -135,20 +110,6 @@ describe("buildPrContentPrompt", () => {
     expect(result.prompt).toContain("Repository change request template:");
     expect(result.prompt).toContain("<!-- remove me -->\n## What changed\n\n## Verification");
     expect(result.prompt).not.toContain("include headings '## Summary' and '## Testing'");
-  });
-
-  it("includes the user request as context when provided", () => {
-    const result = buildPrContentPrompt({
-      baseBranch: "main",
-      headBranch: "feature/auth",
-      commitSummary: "feat: add login page",
-      diffSummary: "3 files changed",
-      diffPatch: "diff",
-      userRequest: "Users should be able to sign in with a passkey.",
-    });
-
-    expect(result.prompt).toContain("User request context:");
-    expect(result.prompt).toContain("Users should be able to sign in with a passkey.");
   });
 });
 

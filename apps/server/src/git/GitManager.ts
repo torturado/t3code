@@ -59,7 +59,6 @@ import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import * as SourceControlProvider from "../sourceControl/SourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import { detectPrTemplate } from "../sourceControl/PrTemplateDetection.ts";
 import type { ChangeRequest } from "@t3tools/contracts";
@@ -185,7 +184,6 @@ interface BranchHeadContext {
   headRepositoryNameWithOwner: string | null;
   headRepositoryOwnerLogin: string | null;
   isCrossRepository: boolean;
-  targetRepositories: ReadonlyArray<string>;
 }
 
 function parseRepositoryNameFromPullRequestUrl(url: string): string | null {
@@ -1154,11 +1152,8 @@ export const make = Effect.gen(function* () {
   const resolveBranchHeadContext = Effect.fn("resolveBranchHeadContext")(function* (
     cwd: string,
     details: { branch: string; upstreamRef: string | null },
-    preferredRemoteName?: string,
   ) {
-    const remoteName =
-      preferredRemoteName ??
-      (yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`));
+    const remoteName = yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`);
     const headBranchFromUpstream = details.upstreamRef
       ? extractBranchNameFromRemoteRef(details.upstreamRef, { remoteName })
       : "";
@@ -1166,54 +1161,12 @@ export const make = Effect.gen(function* () {
     const shouldProbeLocalBranchSelector =
       headBranchFromUpstream.length === 0 || headBranch === details.branch;
 
-    const remoteNamesResult = yield* gitCore
-      .execute({
-        operation: "GitManager.listRemoteNames",
-        cwd,
-        args: ["remote"],
-        allowNonZeroExit: true,
-        timeoutMs: 5_000,
-        maxOutputBytes: 64 * 1024,
-      })
-      .pipe(Effect.orElseSucceed(() => null));
-    const remoteNames =
-      remoteNamesResult?.exitCode === 0
-        ? remoteNamesResult.stdout
-            .split(/\r?\n/u)
-            .map((name) => name.trim())
-            .filter((name) => name.length > 0)
-        : [];
-    const remoteNamesToResolve = [
-      ...new Set([...(remoteName ? [remoteName] : []), "origin", ...remoteNames]),
-    ];
-    const remoteRepositories = yield* Effect.all(
-      remoteNamesToResolve.map((name) => resolveRemoteRepositoryContext(cwd, name)),
+    const [remoteRepository, originRepository] = yield* Effect.all(
+      [
+        resolveRemoteRepositoryContext(cwd, remoteName),
+        resolveRemoteRepositoryContext(cwd, "origin"),
+      ],
       { concurrency: "unbounded" },
-    );
-    const emptyRemoteRepository = {
-      remoteUrlKey: null,
-      repositoryNameWithOwner: null,
-      ownerLogin: null,
-    } as const;
-    const remoteRepositoryByName = new Map(
-      remoteNamesToResolve.map(
-        (name, index) => [name, remoteRepositories[index] ?? emptyRemoteRepository] as const,
-      ),
-    );
-    const remoteRepository = remoteName
-      ? (remoteRepositoryByName.get(remoteName) ?? emptyRemoteRepository)
-      : emptyRemoteRepository;
-    const originRepository = remoteRepositoryByName.get("origin") ?? emptyRemoteRepository;
-    const targetRepositories = [
-      ...new Set(
-        remoteRepositories.flatMap(({ repositoryNameWithOwner }) =>
-          repositoryNameWithOwner ? [repositoryNameWithOwner] : [],
-        ),
-      ),
-    ].filter(
-      (repository) =>
-        remoteRepository.repositoryNameWithOwner === null ||
-        repository.toLowerCase() !== remoteRepository.repositoryNameWithOwner.toLowerCase(),
     );
 
     const isCrossRepository =
@@ -1232,9 +1185,7 @@ export const make = Effect.gen(function* () {
     const remoteAliasHeadSelector =
       remoteName && headBranch.length > 0 ? `${remoteName}:${headBranch}` : null;
     const shouldProbeRemoteOwnedSelectors =
-      isCrossRepository ||
-      (remoteName !== null && remoteName !== "origin") ||
-      preferredRemoteName !== undefined;
+      isCrossRepository || (remoteName !== null && remoteName !== "origin");
 
     const headSelectors: string[] = [];
     if (isCrossRepository && shouldProbeRemoteOwnedSelectors) {
@@ -1261,9 +1212,7 @@ export const make = Effect.gen(function* () {
       headBranch,
       headSelectors,
       preferredHeadSelector:
-        ownerHeadSelector && (isCrossRepository || preferredRemoteName !== undefined)
-          ? ownerHeadSelector
-          : headBranch,
+        ownerHeadSelector && isCrossRepository ? ownerHeadSelector : headBranch,
       remoteName,
       headRemoteUrlKey:
         remoteRepository.remoteUrlKey ??
@@ -1271,7 +1220,6 @@ export const make = Effect.gen(function* () {
       headRepositoryNameWithOwner: remoteRepository.repositoryNameWithOwner,
       headRepositoryOwnerLogin: remoteRepository.ownerLogin,
       isCrossRepository,
-      targetRepositories,
     } satisfies BranchHeadContext;
   });
 
@@ -1321,54 +1269,30 @@ export const make = Effect.gen(function* () {
       | "headRepositoryNameWithOwner"
       | "headRepositoryOwnerLogin"
       | "isCrossRepository"
-      | "targetRepositories"
     >,
-    target?: SourceControlProvider.SourceControlRefSelector,
   ) {
-    const provider = yield* sourceControlProvider(cwd);
-    const targetRepositories = target?.repository
-      ? [target.repository]
-      : provider.kind === "github"
-        ? [undefined, ...headContext.targetRepositories]
-        : [undefined];
-
     for (const headSelector of headContext.headSelectors) {
-      for (const targetRepository of targetRepositories) {
-        const queryHeadSelector =
-          targetRepository && headContext.headRepositoryOwnerLogin
-            ? `${headContext.headRepositoryOwnerLogin}:${headContext.headBranch}`
-            : headSelector;
-        const pullRequests = yield* provider.listChangeRequests({
-          cwd,
-          headSelector: queryHeadSelector,
-          state: "open",
-          limit: 1,
-          ...(target ? { target } : {}),
-          ...(targetRepository && targetRepository !== target?.repository
-            ? { targetRepository }
-            : {}),
-        });
-        const normalizedPullRequests = pullRequests
-          .filter(
-            (pullRequest) =>
-              target?.refName === undefined || pullRequest.baseRefName === target.refName,
-          )
-          .map(toPullRequestInfo);
+      const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
+        cwd,
+        headSelector,
+        state: "open",
+        limit: 1,
+      });
+      const normalizedPullRequests = pullRequests.map(toPullRequestInfo);
 
-        const firstPullRequest = normalizedPullRequests.find((pullRequest) =>
-          matchesBranchHeadContext(pullRequest, headContext),
-        );
-        if (firstPullRequest) {
-          return {
-            number: firstPullRequest.number,
-            title: firstPullRequest.title,
-            url: firstPullRequest.url,
-            baseRefName: firstPullRequest.baseRefName,
-            headRefName: firstPullRequest.headRefName,
-            state: "open",
-            updatedAt: Option.none(),
-          } satisfies PullRequestInfo;
-        }
+      const firstPullRequest = normalizedPullRequests.find((pullRequest) =>
+        matchesBranchHeadContext(pullRequest, headContext),
+      );
+      if (firstPullRequest) {
+        return {
+          number: firstPullRequest.number,
+          title: firstPullRequest.title,
+          url: firstPullRequest.url,
+          baseRefName: firstPullRequest.baseRefName,
+          headRefName: firstPullRequest.headRefName,
+          state: "open",
+          updatedAt: Option.none(),
+        } satisfies PullRequestInfo;
       }
     }
 
@@ -1379,31 +1303,21 @@ export const make = Effect.gen(function* () {
     cwd: string,
     headContext: BranchHeadContext,
   ) {
-    const provider = yield* sourceControlProvider(cwd);
-    const targetRepositories =
-      provider.kind === "github" ? [undefined, ...headContext.targetRepositories] : [undefined];
     const parsedByNumber = new Map<number, PullRequestInfo>();
 
     for (const headSelector of headContext.headSelectors) {
-      for (const targetRepository of targetRepositories) {
-        const queryHeadSelector =
-          targetRepository && headContext.headRepositoryOwnerLogin
-            ? `${headContext.headRepositoryOwnerLogin}:${headContext.headBranch}`
-            : headSelector;
-        const pullRequests = yield* provider.listChangeRequests({
-          cwd,
-          headSelector: queryHeadSelector,
-          ...(targetRepository ? { targetRepository } : {}),
-          state: "all",
-          limit: 20,
-        });
+      const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
+        cwd,
+        headSelector,
+        state: "all",
+        limit: 20,
+      });
 
-        for (const pr of pullRequests.map(toPullRequestInfo)) {
-          if (!matchesBranchHeadContext(pr, headContext)) {
-            continue;
-          }
-          parsedByNumber.set(pr.number, pr);
+      for (const pr of pullRequests.map(toPullRequestInfo)) {
+        if (!matchesBranchHeadContext(pr, headContext)) {
+          continue;
         }
+        parsedByNumber.set(pr.number, pr);
       }
     }
 
@@ -1514,11 +1428,7 @@ export const make = Effect.gen(function* () {
     branch: string,
     upstreamRef: string | null,
     headContext: Pick<BranchHeadContext, "isCrossRepository" | "remoteName">,
-    requestedBaseBranch?: string,
   ) {
-    const explicitBaseBranch = requestedBaseBranch?.trim();
-    if (explicitBaseBranch) return explicitBaseBranch;
-
     const configured = yield* gitCore.readConfigValue(cwd, `branch.${branch}.gh-merge-base`);
     if (configured) return configured;
 
@@ -1567,7 +1477,6 @@ export const make = Effect.gen(function* () {
     function* (input: {
       cwd: string;
       branch: string | null;
-      userRequest?: string;
       commitMessage?: string;
       /** When true, also produce a semantic feature branch name. */
       includeBranch?: boolean;
@@ -1599,7 +1508,6 @@ export const make = Effect.gen(function* () {
           branch: input.branch,
           stagedSummary: limitContext(context.stagedSummary, 8_000),
           stagedPatch: limitContext(context.stagedPatch, 50_000),
-          ...(input.userRequest ? { userRequest: input.userRequest } : {}),
           ...(input.includeBranch ? { includeBranch: true } : {}),
           ...(policy ? { policy } : {}),
           modelSelection: input.settings.modelSelection,
@@ -1620,7 +1528,6 @@ export const make = Effect.gen(function* () {
     cwd: string,
     action: "commit" | "commit_push" | "commit_push_pr",
     branch: string | null,
-    userRequest?: string,
     commitMessage?: string,
     preResolvedSuggestion?: CommitAndBranchSuggestion,
     filePaths?: readonly string[],
@@ -1650,7 +1557,6 @@ export const make = Effect.gen(function* () {
       suggestion = yield* resolveCommitAndBranchSuggestion({
         cwd,
         branch,
-        ...(userRequest ? { userRequest } : {}),
         ...(commitMessage ? { commitMessage } : {}),
         ...(filePaths ? { filePaths } : {}),
         settings,
@@ -1735,10 +1641,6 @@ export const make = Effect.gen(function* () {
     cwd: string,
     fallbackBranch: string | null,
     emit: GitActionProgressEmitter,
-    userRequest?: string,
-    prRepository?: string,
-    prBaseBranch?: string,
-    pushRemoteName?: string,
   ) {
     const provider = yield* sourceControlProvider(cwd);
     const terms = getChangeRequestTerminologyForKind(provider.kind);
@@ -1759,26 +1661,12 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    const headContext = yield* resolveBranchHeadContext(
-      cwd,
-      {
-        branch,
-        upstreamRef: details.upstreamRef,
-      },
-      pushRemoteName,
-    );
-
-    const baseBranch = yield* resolveBaseBranch(
-      cwd,
+    const headContext = yield* resolveBranchHeadContext(cwd, {
       branch,
-      details.upstreamRef,
-      headContext,
-      prBaseBranch,
-    );
-    const target = prRepository?.trim()
-      ? { refName: baseBranch, repository: prRepository.trim() }
-      : undefined;
-    const existing = yield* findOpenPr(cwd, headContext, target);
+      upstreamRef: details.upstreamRef,
+    });
+
+    const existing = yield* findOpenPr(cwd, headContext);
     if (existing) {
       return {
         status: "opened_existing" as const,
@@ -1790,6 +1678,7 @@ export const make = Effect.gen(function* () {
       };
     }
 
+    const baseBranch = yield* resolveBaseBranch(cwd, branch, details.upstreamRef, headContext);
     yield* emit({
       kind: "phase_started",
       phase: "pr",
@@ -1810,7 +1699,6 @@ export const make = Effect.gen(function* () {
       commitSummary: limitContext(rangeContext.commitSummary, 20_000),
       diffSummary: limitContext(rangeContext.diffSummary, 20_000),
       diffPatch: limitContext(rangeContext.diffPatch, 60_000),
-      ...(userRequest ? { userRequest } : {}),
       ...(changeRequestTemplate ? { changeRequestTemplate } : {}),
       ...(policy ? { policy } : {}),
       modelSelection: settings.modelSelection,
@@ -1841,13 +1729,12 @@ export const make = Effect.gen(function* () {
         cwd,
         baseRefName: baseBranch,
         headSelector: headContext.preferredHeadSelector,
-        ...(target ? { target } : {}),
         title: generated.title,
         bodyFile,
       })
       .pipe(Effect.ensuring(fileSystem.remove(bodyFile).pipe(Effect.catch(() => Effect.void))));
 
-    const created = yield* findOpenPr(cwd, headContext, target);
+    const created = yield* findOpenPr(cwd, headContext);
     if (!created) {
       return {
         status: "created" as const,
@@ -2193,14 +2080,12 @@ export const make = Effect.gen(function* () {
     branch: string | null,
     commitMessage?: string,
     filePaths?: readonly string[],
-    userRequest?: string,
   ) {
     const suggestion = yield* resolveCommitAndBranchSuggestion({
       cwd,
       branch,
       ...(commitMessage ? { commitMessage } : {}),
       ...(filePaths ? { filePaths } : {}),
-      ...(userRequest ? { userRequest } : {}),
       includeBranch: true,
       settings,
     });
@@ -2332,7 +2217,6 @@ export const make = Effect.gen(function* () {
             initialStatus.branch,
             input.commitMessage,
             input.filePaths,
-            input.userRequest,
           );
           branchStep = result.branchStep;
           commitMessageForStep = result.resolvedCommitMessage;
@@ -2358,7 +2242,6 @@ export const make = Effect.gen(function* () {
                   input.cwd,
                   commitAction,
                   currentBranch,
-                  input.userRequest,
                   commitMessageForStep,
                   preResolvedCommitSuggestion,
                   input.filePaths,
@@ -2378,11 +2261,7 @@ export const make = Effect.gen(function* () {
               })
               .pipe(
                 Effect.tap(() => Ref.set(currentPhase, Option.some("push"))),
-                Effect.flatMap(() =>
-                  gitCore.pushCurrentBranch(input.cwd, currentBranch, {
-                    ...(input.pushRemoteName ? { remoteName: input.pushRemoteName } : {}),
-                  }),
-                ),
+                Effect.flatMap(() => gitCore.pushCurrentBranch(input.cwd, currentBranch)),
               )
           : { status: "skipped_not_requested" as const };
 
@@ -2396,16 +2275,7 @@ export const make = Effect.gen(function* () {
               .pipe(
                 Effect.tap(() => Ref.set(currentPhase, Option.some("pr"))),
                 Effect.flatMap(() =>
-                  runPrStep(
-                    textGenerationSettings,
-                    input.cwd,
-                    currentBranch,
-                    progress.emit,
-                    input.userRequest,
-                    input.prRepository,
-                    input.prBaseBranch,
-                    input.pushRemoteName,
-                  ),
+                  runPrStep(textGenerationSettings, input.cwd, currentBranch, progress.emit),
                 ),
               )
           : { status: "skipped_not_requested" as const };
