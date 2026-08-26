@@ -114,6 +114,14 @@ export const GitRunStackedActionInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   action: GitStackedAction,
   commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
+  /** User-authored context for source-control text generation. */
+  userRequest: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(12_000))),
+  /** Remote used when this action publishes the current branch. */
+  pushRemoteName: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Provider repository that receives the pull/merge request. */
+  prRepository: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Provider branch that receives the pull/merge request. */
+  prBaseBranch: Schema.optional(TrimmedNonEmptyStringSchema),
   featureBranch: Schema.optional(Schema.Boolean),
   filePaths: Schema.optional(
     Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),

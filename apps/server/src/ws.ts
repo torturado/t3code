@@ -1942,6 +1942,10 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "vcs",
             },
           ),
+        [WS_METHODS.vcsListRemotes]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsListRemotes, gitWorkflow.listRemotes(input), {
+            "rpc.aggregate": "vcs",
+          }),
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,

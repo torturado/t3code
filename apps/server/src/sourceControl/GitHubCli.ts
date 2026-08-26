@@ -228,6 +228,7 @@ export class GitHubCli extends Context.Service<
     readonly listOpenPullRequests: (input: {
       readonly cwd: string;
       readonly headSelector: string;
+      readonly repository?: string;
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
 
@@ -251,6 +252,7 @@ export class GitHubCli extends Context.Service<
       readonly cwd: string;
       readonly baseBranch: string;
       readonly headSelector: string;
+      readonly repository?: string;
       readonly title: string;
       readonly bodyFile: string;
     }) => Effect.Effect<void, GitHubCliError>;
@@ -347,6 +349,7 @@ export const make = Effect.gen(function* () {
         args: [
           "pr",
           "list",
+          ...(input.repository ? ["--repo", input.repository] : []),
           "--head",
           input.headSelector,
           "--state",
@@ -447,6 +450,7 @@ export const make = Effect.gen(function* () {
         args: [
           "pr",
           "create",
+          ...(input.repository ? ["--repo", input.repository] : []),
           "--base",
           input.baseBranch,
           "--head",

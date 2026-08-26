@@ -14,6 +14,18 @@ import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
 const EARLIER_CONTENT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
 
+const SOURCE_CONTROL_DISCOVERY_INSTRUCTIONS = [
+  "Before producing the requested source-control text, use the read-only tools available in this provider to inspect the applicable instructions and skills for this working directory.",
+  "Follow the provider's normal discovery rules for project and user instructions. Read whichever instruction files and relevant skills are available; do not assume a particular filename, skill name, or path.",
+  "Use relevant skills as guidance for the requested text. Do not execute their side effects: this is a read-only generation step, so do not edit files, commit, push, create or update a change request, or perform any other mutation.",
+  "After any necessary tool calls, return only the requested JSON object.",
+] as const;
+
+function userRequestContext(userRequest: string | undefined): ReadonlyArray<string> {
+  const trimmed = userRequest?.trim();
+  return trimmed ? ["", "User request context:", limitSection(trimmed, 12_000)] : [];
+}
+
 function policyInstruction(instruction: string | undefined): ReadonlyArray<string> {
   const trimmed = instruction?.trim();
   return trimmed ? ["", "Additional instructions:", limitSection(trimmed, 4_000)] : [];
@@ -27,6 +39,7 @@ export interface CommitMessagePromptInput {
   branch: string | null;
   stagedSummary: string;
   stagedPatch: string;
+  userRequest?: string | undefined;
   includeBranch?: boolean;
   policy?: TextGenerationPolicy | undefined;
 }
@@ -35,6 +48,9 @@ export function buildCommitMessagePrompt(input: CommitMessagePromptInput) {
   const wantsBranch = input.includeBranch === true;
 
   const prompt = [
+    ...SOURCE_CONTROL_DISCOVERY_INSTRUCTIONS,
+    ...userRequestContext(input.userRequest),
+    "",
     "You write concise git commit messages.",
     wantsBranch
       ? "Return a JSON object with keys: subject, body, branch."
@@ -87,6 +103,7 @@ export interface PrContentPromptInput {
   commitSummary: string;
   diffSummary: string;
   diffPatch: string;
+  userRequest?: string | undefined;
   changeRequestTemplate?: string | undefined;
   policy?: TextGenerationPolicy | undefined;
 }
@@ -106,6 +123,9 @@ export function buildPrContentPrompt(input: PrContentPromptInput) {
         "- under Testing, include bullet points with concrete checks or 'Not run' where appropriate",
       ];
   const prompt = [
+    ...SOURCE_CONTROL_DISCOVERY_INSTRUCTIONS,
+    ...userRequestContext(input.userRequest),
+    "",
     "You write source control change request content.",
     "Return a JSON object with keys: title, body.",
     "Rules:",

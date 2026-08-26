@@ -529,6 +529,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         branch: input.branch,
         stagedSummary: input.stagedSummary,
         stagedPatch: input.stagedPatch,
+        userRequest: input.userRequest,
         includeBranch: input.includeBranch === true,
         policy: input.policy,
       });
@@ -557,6 +558,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         commitSummary: input.commitSummary,
         diffSummary: input.diffSummary,
         diffPatch: input.diffPatch,
+        userRequest: input.userRequest,
         policy: input.policy,
         changeRequestTemplate: input.changeRequestTemplate,
       });

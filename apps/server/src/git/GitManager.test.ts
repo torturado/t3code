@@ -44,6 +44,7 @@ import * as GitManager from "./GitManager.ts";
 interface FakeGhScenario {
   prListSequence?: string[];
   prListByHeadSelector?: Record<string, string>;
+  prListByRepositoryAndHeadSelector?: Record<string, string>;
   prListSequenceByHeadSelector?: Record<string, string[]>;
   createdPrUrl?: string;
   defaultBranch?: string;
@@ -373,15 +374,26 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
         headSelectorIndex >= 0 && headSelectorIndex < args.length - 1
           ? args[headSelectorIndex + 1]
           : undefined;
+      const repositoryIndex = args.findIndex((value) => value === "--repo");
+      const repository =
+        repositoryIndex >= 0 && repositoryIndex < args.length - 1
+          ? args[repositoryIndex + 1]
+          : undefined;
       const mappedQueue =
         typeof headSelector === "string"
           ? prListQueueByHeadSelector.get(headSelector)?.shift()
+          : undefined;
+      const mappedRepositoryStdout =
+        typeof repository === "string" && typeof headSelector === "string"
+          ? scenario.prListByRepositoryAndHeadSelector?.[`${repository}::${headSelector}`]
           : undefined;
       const mappedStdout =
         typeof headSelector === "string"
           ? scenario.prListByHeadSelector?.[headSelector]
           : undefined;
-      const stdout = (mappedQueue ?? mappedStdout ?? prListQueue.shift() ?? "[]") + "\n";
+      const stdout =
+        (mappedQueue ?? mappedRepositoryStdout ?? mappedStdout ?? prListQueue.shift() ?? "[]") +
+        "\n";
       return Effect.succeed(fakeGhOutput(stdout));
     }
 
@@ -501,6 +513,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           args: [
             "pr",
             "list",
+            ...(input.repository ? ["--repo", input.repository] : []),
             "--head",
             input.headSelector,
             "--state",
@@ -524,6 +537,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           args: [
             "pr",
             "create",
+            ...(input.repository ? ["--repo", input.repository] : []),
             "--base",
             input.baseBranch,
             "--head",
@@ -587,6 +601,10 @@ function runStackedAction(
     action: "commit" | "push" | "create_pr" | "commit_push" | "commit_push_pr";
     actionId?: string;
     commitMessage?: string;
+    userRequest?: string;
+    pushRemoteName?: string;
+    prRepository?: string;
+    prBaseBranch?: string;
     featureBranch?: boolean;
     filePaths?: readonly string[];
   },
@@ -718,6 +736,77 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         headRef: "feature/status-open-pr",
         state: "open",
       });
+    }),
+  );
+
+  it.effect("status finds a PR opened against another configured GitHub remote", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-upstream-pr"]);
+      const originDir = yield* createBareRemote();
+      const upstreamDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["remote", "add", "upstream", upstreamDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-upstream-pr"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:torturado/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "upstream",
+        "https://github.com/pingdotgg/codething-mvp.git",
+        upstreamDir,
+      );
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/status-upstream-pr": "[]",
+          },
+          prListByRepositoryAndHeadSelector: {
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            "pingdotgg/codething-mvp::torturado:feature/status-upstream-pr": JSON.stringify([
+              {
+                number: 42,
+                title: "Upstream PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+                baseRefName: "main",
+                headRefName: "feature/status-upstream-pr",
+                state: "OPEN",
+                isCrossRepository: true,
+                headRepository: {
+                  nameWithOwner: "torturado/codething-mvp",
+                },
+                headRepositoryOwner: {
+                  login: "torturado",
+                },
+              },
+            ]),
+          },
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+
+      expect(status.pr).toEqual({
+        number: 42,
+        title: "Upstream PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+        baseRef: "main",
+        headRef: "feature/status-upstream-pr",
+        state: "open",
+      });
+      expect(
+        ghCalls.some((call) =>
+          call.includes(
+            "pr list --repo pingdotgg/codething-mvp --head torturado:feature/status-upstream-pr",
+          ),
+        ),
+      ).toBe(true);
     }),
   );
 
@@ -1670,6 +1759,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* initRepo(repoDir);
       NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
       let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
+      let generatedUserRequest: string | undefined;
 
       const { manager } = yield* makeManager({
         serverSettings: {
@@ -1681,6 +1771,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generateCommitMessage: (input) => {
             generatedPolicy = input.policy;
+            generatedUserRequest = input.userRequest;
             return Effect.succeed({ subject: "Implement stacked git actions", body: "" });
           },
         },
@@ -1688,6 +1779,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit",
+        userRequest: "Fix the timeout users see when reconnecting.",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
@@ -1695,6 +1787,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(result.push.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("skipped_not_requested");
       expect(generatedPolicy).toMatchObject({ commitInstructions: "Use a direct tone." });
+      expect(generatedUserRequest).toBe("Fix the timeout users see when reconnecting.");
       expect(result.toast).toMatchObject({
         description: "Implement stacked git actions",
         cta: {
@@ -2116,6 +2209,55 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           ),
         ).toBe(true);
       }),
+  );
+
+  it.effect("publishes to the selected remote and PR repository", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/selected-destination"]);
+      const originDir = yield* createBareRemote();
+      const upstreamDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["remote", "add", "upstream", upstreamDir]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "feature.txt"), "selected destination\n");
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/selected-destination": "[]",
+          },
+        },
+      });
+
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit_push_pr",
+        pushRemoteName: "upstream",
+        prRepository: "pingdotgg/t3code",
+        prBaseBranch: "main",
+      });
+
+      expect(result.push.status).toBe("pushed");
+      expect(result.pr.status).toBe("created");
+      expect(
+        yield* runGit(repoDir, ["rev-parse", "--abbrev-ref", "@{upstream}"]).pipe(
+          Effect.map((output) => output.stdout.trim()),
+        ),
+      ).toBe("upstream/feature/selected-destination");
+      expect(
+        ghCalls.some((call) =>
+          call.includes("pr list --repo pingdotgg/t3code --head feature/selected-destination"),
+        ),
+      ).toBe(true);
+      expect(
+        ghCalls.some((call) =>
+          call.includes(
+            "pr create --repo pingdotgg/t3code --base main --head feature/selected-destination",
+          ),
+        ),
+      ).toBe(true);
+    }),
   );
 
   it.effect("skips push when branch is already up to date", () =>
@@ -2780,6 +2922,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["config", "branch.feature-create-pr.gh-merge-base", "main"]);
       let generatedPolicy: TextGeneration.PrContentGenerationInput["policy"] = undefined;
       let generatedChangeRequestTemplate: string | undefined;
+      let generatedUserRequest: string | undefined;
 
       const { manager, ghCalls } = yield* makeManager({
         serverSettings: {
@@ -2792,6 +2935,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           generatePrContent: (input) => {
             generatedPolicy = input.policy;
             generatedChangeRequestTemplate = input.changeRequestTemplate;
+            generatedUserRequest = input.userRequest;
             return Effect.succeed({
               title: "Add stacked git actions",
               body: "## What changed?\nAdded stacked git actions.",
@@ -2817,6 +2961,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit_push_pr",
+        userRequest: "Users should be able to publish this change safely.",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
@@ -2826,6 +2971,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         changeRequestInstructions: "Lead with user impact.",
       });
       expect(generatedChangeRequestTemplate).toBe("## What changed?\n\n## Verification");
+      expect(generatedUserRequest).toBe("Users should be able to publish this change safely.");
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
       expect(
         ghCalls.some((call) => call.includes("pr create --base main --head feature-create-pr")),

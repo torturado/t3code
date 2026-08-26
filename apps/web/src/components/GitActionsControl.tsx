@@ -13,6 +13,7 @@ import type {
   SourceControlProviderKind,
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryVisibility,
+  VcsRef,
   VcsStatusResult,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -109,6 +110,9 @@ interface PendingDefaultBranchAction {
   branchName: string;
   includesCommit: boolean;
   commitMessage?: string;
+  pushRemoteName?: string;
+  prRepository?: string;
+  prBaseBranch?: string;
   onConfirmed?: () => void;
   filePaths?: string[];
 }
@@ -135,6 +139,9 @@ interface ActiveGitActionProgress {
 interface RunGitActionWithToastInput {
   action: GitStackedAction;
   commitMessage?: string;
+  pushRemoteName?: string;
+  prRepository?: string;
+  prBaseBranch?: string;
   onConfirmed?: () => void;
   skipDefaultBranchPrompt?: boolean;
   statusOverride?: VcsStatusResult | null;
@@ -304,7 +311,7 @@ function getMenuActionDisabledReason({
       return "Branch is behind upstream. Pull/rebase before pushing.";
     }
     if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
-      return 'Add an "origin" remote before pushing.';
+      return "Add a writable remote before pushing.";
     }
     if (!isAhead) {
       return "No local commits to push.";
@@ -322,7 +329,7 @@ function getMenuActionDisabledReason({
     return `Commit local changes before creating a ${terminology.singular}.`;
   }
   if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
-    return `Add an "origin" remote before creating a ${terminology.singular}.`;
+    return `Add a writable remote before creating a ${terminology.singular}.`;
   }
   if (!isAhead) {
     return `No local commits to include in a ${terminology.singular}.`;
@@ -336,6 +343,54 @@ function getMenuActionDisabledReason({
 const COMMIT_DIALOG_TITLE = "Commit changes";
 const COMMIT_DIALOG_DESCRIPTION =
   "Review and confirm your commit. Leave the message blank to auto-generate one.";
+
+function actionIncludesCommit(action: GitStackedAction): boolean {
+  return action === "commit" || action === "commit_push" || action === "commit_push_pr";
+}
+
+function actionIncludesPush(action: GitStackedAction): boolean {
+  return action !== "commit";
+}
+
+function actionIncludesPullRequest(action: GitStackedAction): boolean {
+  return action === "create_pr" || action === "commit_push_pr";
+}
+
+function actionLabel(action: GitStackedAction, shortChangeRequestLabel: string): string {
+  if (action === "commit") return "Commit";
+  if (action === "push") return "Push";
+  if (action === "create_pr") return `Push & create ${shortChangeRequestLabel}`;
+  if (action === "commit_push") return "Commit & push";
+  return `Commit, push & create ${shortChangeRequestLabel}`;
+}
+
+function repositoryPathFromRemoteUrl(remoteUrl: string): string | null {
+  const trimmedUrl = remoteUrl.trim();
+  const scpUrl = trimmedUrl.includes("://")
+    ? null
+    : /^(?:[^@\s]+@)?([^:\s]+):(.+)$/u.exec(trimmedUrl);
+  const normalizedUrl = scpUrl ? `https://${scpUrl[2]}/${scpUrl[3]}` : trimmedUrl;
+
+  try {
+    const path = new URL(normalizedUrl).pathname.replace(/^\/+|\/+$/gu, "");
+    const repository = path.replace(/\.git$/u, "");
+    const parts = repository.split("/").filter((part) => part.length > 0);
+    const gitSegmentIndex = parts.indexOf("_git");
+    if (gitSegmentIndex > 0 && gitSegmentIndex + 1 < parts.length) {
+      return `${parts[gitSegmentIndex - 1]}/${parts[gitSegmentIndex + 1]}`;
+    }
+    return repository.length > 0 ? repository : null;
+  } catch {
+    return null;
+  }
+}
+
+function branchNameFromRef(ref: VcsRef): string {
+  if (ref.isRemote && ref.remoteName && ref.name.startsWith(`${ref.remoteName}/`)) {
+    return ref.name.slice(ref.remoteName.length + 1);
+  }
+  return ref.name;
+}
 
 function GitActionItemIcon({
   icon,
@@ -1005,9 +1060,31 @@ export default function GitActionsControl({
   const activeServerThread = useThread(activeThreadRef, {
     waitForShell: activeDraftThread !== null,
   });
+  const sourceControlUserRequest = useMemo(() => {
+    if (!activeServerThread) {
+      return undefined;
+    }
+
+    const request = activeServerThread.messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.text.trim())
+      .filter((message) => message.length > 0)
+      .join("\n\n")
+      .trim();
+
+    return request.length > 0 ? request.slice(0, 12_000) : undefined;
+  }, [activeServerThread]);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
+  const [dialogAction, setDialogAction] = useState<GitStackedAction>("commit");
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
+  const [dialogPushRemoteName, setDialogPushRemoteName] = useState("");
+  const [dialogPrRepository, setDialogPrRepository] = useState("");
+  const [dialogPrBaseBranch, setDialogPrBaseBranch] = useState("");
+  const [isCustomPrRepository, setIsCustomPrRepository] = useState(false);
+  const [customPrRepository, setCustomPrRepository] = useState("");
+  const [isCustomPrBaseBranch, setIsCustomPrBaseBranch] = useState(false);
+  const [customPrBaseBranch, setCustomPrBaseBranch] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
@@ -1114,6 +1191,133 @@ export default function GitActionsControl({
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
   const allSelected = excludedFiles.size === 0;
   const noneSelected = selectedFiles.length === 0;
+  const dialogWillCommit =
+    actionIncludesCommit(dialogAction) &&
+    (dialogAction === "commit" || gitStatusForActions?.hasWorkingTreeChanges === true);
+  const dialogIncludesPush = actionIncludesPush(dialogAction);
+  const dialogIncludesPullRequest = actionIncludesPullRequest(dialogAction);
+  const dialogTitle = dialogWillCommit ? COMMIT_DIALOG_TITLE : "Review source control action";
+  const dialogDescription = dialogWillCommit
+    ? COMMIT_DIALOG_DESCRIPTION
+    : "Review where this action will publish the current branch.";
+  const dialogSubmitLabel = actionLabel(dialogAction, changeRequestTerminology.shortLabel);
+
+  const gitRemotesQuery = useEnvironmentQuery(
+    activeEnvironmentId !== null && gitCwd !== null && isCommitDialogOpen && dialogIncludesPush
+      ? vcsEnvironment.listRemotes({
+          environmentId: activeEnvironmentId,
+          input: { cwd: gitCwd },
+        })
+      : null,
+  );
+  const gitBranchRefsQuery = useEnvironmentQuery(
+    activeEnvironmentId !== null &&
+      gitCwd !== null &&
+      isCommitDialogOpen &&
+      dialogIncludesPullRequest
+      ? vcsEnvironment.listRefs({
+          environmentId: activeEnvironmentId,
+          input: {
+            cwd: gitCwd,
+            includeMatchingRemoteRefs: true,
+            limit: 100,
+          },
+        })
+      : null,
+  );
+  const gitRemotes = gitRemotesQuery.data?.remotes ?? [];
+  const defaultPushRemoteName =
+    gitRemotes.find((remote) => remote.isPrimary)?.name ?? gitRemotes[0]?.name ?? "";
+  const preferredPrRemoteName =
+    gitRemotes.find((remote) => remote.name === "upstream")?.name ??
+    gitRemotes.find((remote) => !remote.isPrimary)?.name ??
+    defaultPushRemoteName;
+  const prRepositoryOptions = useMemo(
+    () =>
+      gitRemotes.flatMap((remote) => {
+        const repository = repositoryPathFromRemoteUrl(remote.url);
+        return repository === null
+          ? []
+          : [
+              {
+                remoteName: remote.name,
+                repository,
+                isPrimary: remote.isPrimary,
+              },
+            ];
+      }),
+    [gitRemotes],
+  );
+  const defaultPrRepository =
+    prRepositoryOptions.find((option) => option.remoteName === preferredPrRemoteName)?.repository ??
+    prRepositoryOptions[0]?.repository ??
+    "";
+  const baseBranchOptions = useMemo(() => {
+    const branches = new Map<string, boolean>();
+    for (const ref of gitBranchRefsQuery.data?.refs ?? []) {
+      const branch = branchNameFromRef(ref);
+      if (branch.length > 0) {
+        branches.set(branch, (branches.get(branch) ?? false) || ref.isDefault);
+      }
+    }
+    const statusBaseBranch = gitStatusForActions?.pr?.baseRef;
+    if (statusBaseBranch) {
+      branches.set(statusBaseBranch, true);
+    }
+    const options = [...branches.entries()]
+      .toSorted(([leftName, leftDefault], [rightName, rightDefault]) => {
+        if (leftDefault !== rightDefault) return leftDefault ? -1 : 1;
+        return leftName.localeCompare(rightName);
+      })
+      .map(([name, isDefault]) => ({ name, isDefault }));
+    return options.length > 0
+      ? options
+      : [{ name: gitStatusForActions?.pr?.baseRef ?? "main", isDefault: true }];
+  }, [gitBranchRefsQuery.data?.refs, gitStatusForActions?.pr?.baseRef]);
+  const defaultPrBaseBranch =
+    baseBranchOptions.find((option) => option.isDefault)?.name ??
+    baseBranchOptions[0]?.name ??
+    "main";
+  const selectedPushRemoteName = dialogPushRemoteName || defaultPushRemoteName;
+  const selectedPrRepository = isCustomPrRepository
+    ? customPrRepository.trim()
+    : dialogPrRepository || defaultPrRepository;
+  const selectedPrBaseBranch = isCustomPrBaseBranch
+    ? customPrBaseBranch.trim()
+    : dialogPrBaseBranch || defaultPrBaseBranch;
+  const destinationSelectionReady =
+    (!dialogIncludesPush || selectedPushRemoteName.length > 0) &&
+    (!dialogIncludesPullRequest ||
+      (selectedPrRepository.length > 0 && selectedPrBaseBranch.length > 0));
+
+  const resetGitActionDialog = () => {
+    setIsCommitDialogOpen(false);
+    setDialogCommitMessage("");
+    setDialogPushRemoteName("");
+    setDialogPrRepository("");
+    setDialogPrBaseBranch("");
+    setIsCustomPrRepository(false);
+    setCustomPrRepository("");
+    setIsCustomPrBaseBranch(false);
+    setCustomPrBaseBranch("");
+    setExcludedFiles(new Set());
+    setIsEditingFiles(false);
+  };
+
+  const openGitActionDialog = (action: GitStackedAction) => {
+    setDialogAction(action);
+    setDialogCommitMessage("");
+    setDialogPushRemoteName("");
+    setDialogPrRepository("");
+    setDialogPrBaseBranch("");
+    setIsCustomPrRepository(false);
+    setCustomPrRepository("");
+    setIsCustomPrBaseBranch(false);
+    setCustomPrBaseBranch("");
+    setExcludedFiles(new Set());
+    setIsEditingFiles(false);
+    setIsCommitDialogOpen(true);
+  };
 
   const initAction = useVcsInitAction(sourceControlScope);
   const runImmediateGitAction = useGitStackedAction(sourceControlScope);
@@ -1264,6 +1468,9 @@ export default function GitActionsControl({
     async ({
       action,
       commitMessage,
+      pushRemoteName,
+      prRepository,
+      prBaseBranch,
       onConfirmed,
       skipDefaultBranchPrompt = false,
       statusOverride,
@@ -1297,6 +1504,9 @@ export default function GitActionsControl({
           branchName: actionBranch,
           includesCommit,
           ...(commitMessage ? { commitMessage } : {}),
+          ...(pushRemoteName ? { pushRemoteName } : {}),
+          ...(prRepository ? { prRepository } : {}),
+          ...(prBaseBranch ? { prBaseBranch } : {}),
           ...(onConfirmed ? { onConfirmed } : {}),
           ...(filePaths ? { filePaths } : {}),
         });
@@ -1309,6 +1519,7 @@ export default function GitActionsControl({
         hasCustomCommitMessage: !!commitMessage?.trim(),
         hasWorkingTreeChanges: !!actionStatus?.hasWorkingTreeChanges,
         featureBranch,
+        ...(pushRemoteName ? { pushTarget: pushRemoteName } : {}),
         terminology: changeRequestTerminology,
         shouldPushBeforePr:
           action === "create_pr" &&
@@ -1408,6 +1619,10 @@ export default function GitActionsControl({
         actionId,
         action,
         ...(commitMessage ? { commitMessage } : {}),
+        ...(sourceControlUserRequest ? { userRequest: sourceControlUserRequest } : {}),
+        ...(pushRemoteName ? { pushRemoteName } : {}),
+        ...(prRepository ? { prRepository } : {}),
+        ...(prBaseBranch ? { prBaseBranch } : {}),
         ...(featureBranch ? { featureBranch } : {}),
         ...(filePaths ? { filePaths } : {}),
         onProgress: applyProgressEvent,
@@ -1497,11 +1712,22 @@ export default function GitActionsControl({
 
   const continuePendingDefaultBranchAction = () => {
     if (!pendingDefaultBranchAction) return;
-    const { action, commitMessage, onConfirmed, filePaths } = pendingDefaultBranchAction;
+    const {
+      action,
+      commitMessage,
+      pushRemoteName,
+      prRepository,
+      prBaseBranch,
+      onConfirmed,
+      filePaths,
+    } = pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     void runGitActionWithToast({
       action,
       ...(commitMessage ? { commitMessage } : {}),
+      ...(pushRemoteName ? { pushRemoteName } : {}),
+      ...(prRepository ? { prRepository } : {}),
+      ...(prBaseBranch ? { prBaseBranch } : {}),
       ...(onConfirmed ? { onConfirmed } : {}),
       ...(filePaths ? { filePaths } : {}),
       skipDefaultBranchPrompt: true,
@@ -1510,11 +1736,22 @@ export default function GitActionsControl({
 
   const checkoutFeatureBranchAndContinuePendingAction = () => {
     if (!pendingDefaultBranchAction) return;
-    const { action, commitMessage, onConfirmed, filePaths } = pendingDefaultBranchAction;
+    const {
+      action,
+      commitMessage,
+      pushRemoteName,
+      prRepository,
+      prBaseBranch,
+      onConfirmed,
+      filePaths,
+    } = pendingDefaultBranchAction;
     setPendingDefaultBranchAction(null);
     void runGitActionWithToast({
       action,
       ...(commitMessage ? { commitMessage } : {}),
+      ...(pushRemoteName ? { pushRemoteName } : {}),
+      ...(prRepository ? { prRepository } : {}),
+      ...(prBaseBranch ? { prBaseBranch } : {}),
       ...(onConfirmed ? { onConfirmed } : {}),
       ...(filePaths ? { filePaths } : {}),
       featureBranch: true,
@@ -1523,13 +1760,10 @@ export default function GitActionsControl({
   };
 
   const runDialogActionOnNewBranch = () => {
-    if (!isCommitDialogOpen) return;
+    if (!isCommitDialogOpen || dialogAction !== "commit") return;
     const commitMessage = dialogCommitMessage.trim();
 
-    setIsCommitDialogOpen(false);
-    setDialogCommitMessage("");
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
+    resetGitActionDialog();
 
     void runGitActionWithToast({
       action: "commit",
@@ -1599,7 +1833,7 @@ export default function GitActionsControl({
       return;
     }
     if (quickAction.action) {
-      void runGitActionWithToast({ action: quickAction.action });
+      openGitActionDialog(quickAction.action);
     }
   };
 
@@ -1609,30 +1843,27 @@ export default function GitActionsControl({
       void openExistingPr();
       return;
     }
-    if (item.dialogAction === "push") {
-      void runGitActionWithToast({ action: "push" });
-      return;
+    if (item.dialogAction) {
+      openGitActionDialog(item.dialogAction);
     }
-    if (item.dialogAction === "create_pr") {
-      void runGitActionWithToast({ action: "create_pr" });
-      return;
-    }
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
-    setIsCommitDialogOpen(true);
   };
 
   const runDialogAction = () => {
     if (!isCommitDialogOpen) return;
-    const commitMessage = dialogCommitMessage.trim();
-    setIsCommitDialogOpen(false);
-    setDialogCommitMessage("");
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
+    const action = dialogAction;
+    const commitMessage = dialogWillCommit ? dialogCommitMessage.trim() : "";
+    const pushRemoteName = selectedPushRemoteName.trim();
+    const prRepository = selectedPrRepository.trim();
+    const prBaseBranch = selectedPrBaseBranch.trim();
+    if (!destinationSelectionReady) return;
+    resetGitActionDialog();
     void runGitActionWithToast({
-      action: "commit",
+      action,
       ...(commitMessage ? { commitMessage } : {}),
-      ...(!allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
+      ...(dialogIncludesPush && pushRemoteName ? { pushRemoteName } : {}),
+      ...(dialogIncludesPullRequest && prRepository ? { prRepository } : {}),
+      ...(dialogIncludesPullRequest && prBaseBranch ? { prBaseBranch } : {}),
+      ...(dialogWillCommit && !allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
     });
   };
 
@@ -1837,17 +2068,14 @@ export default function GitActionsControl({
         open={isCommitDialogOpen}
         onOpenChange={(open) => {
           if (!open) {
-            setIsCommitDialogOpen(false);
-            setDialogCommitMessage("");
-            setExcludedFiles(new Set());
-            setIsEditingFiles(false);
+            resetGitActionDialog();
           }
         }}
       >
         <DialogPopup>
           <DialogHeader>
-            <DialogTitle>{COMMIT_DIALOG_TITLE}</DialogTitle>
-            <DialogDescription>{COMMIT_DIALOG_DESCRIPTION}</DialogDescription>
+            <DialogTitle>{dialogTitle}</DialogTitle>
+            <DialogDescription>{dialogDescription}</DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-4">
             <div className="space-y-3 rounded-xl bg-zinc-25 p-3 text-sm ring-1 ring-black/5 dark:bg-white/[0.035] dark:ring-white/5">
@@ -1862,138 +2090,402 @@ export default function GitActionsControl({
                   )}
                 </span>
               </div>
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {isEditingFiles && allFiles.length > 0 && (
-                      <Checkbox
-                        checked={allSelected}
-                        indeterminate={!allSelected && !noneSelected}
-                        onCheckedChange={() => {
-                          setExcludedFiles(
-                            allSelected ? new Set(allFiles.map((f) => f.path)) : new Set(),
-                          );
-                        }}
-                      />
-                    )}
-                    <span className="text-muted-foreground">Files</span>
-                    {!allSelected && !isEditingFiles && (
-                      <span className="text-muted-foreground">
-                        ({selectedFiles.length} of {allFiles.length})
+              {dialogIncludesPush ? (
+                <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+                  <span className="text-muted-foreground">Push</span>
+                  <span className="font-mono">
+                    {selectedPushRemoteName || "no remote selected"}/
+                    {gitStatusForActions?.refName ?? "current branch"}
+                  </span>
+                  {dialogIncludesPullRequest ? (
+                    <>
+                      <span className="text-muted-foreground">PR</span>
+                      <span className="font-mono">
+                        {selectedPrRepository || "no repository selected"}/
+                        {selectedPrBaseBranch || "no branch selected"}
                       </span>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              {dialogWillCommit ? (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {isEditingFiles && allFiles.length > 0 && (
+                        <Checkbox
+                          checked={allSelected}
+                          indeterminate={!allSelected && !noneSelected}
+                          onCheckedChange={() => {
+                            setExcludedFiles(
+                              allSelected ? new Set(allFiles.map((f) => f.path)) : new Set(),
+                            );
+                          }}
+                        />
+                      )}
+                      <span className="text-muted-foreground">Files</span>
+                      {!allSelected && !isEditingFiles && (
+                        <span className="text-muted-foreground">
+                          ({selectedFiles.length} of {allFiles.length})
+                        </span>
+                      )}
+                    </div>
+                    {allFiles.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setIsEditingFiles((prev) => !prev)}
+                      >
+                        {isEditingFiles ? "Done" : "Edit"}
+                      </Button>
                     )}
                   </div>
-                  {allFiles.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => setIsEditingFiles((prev) => !prev)}
-                    >
-                      {isEditingFiles ? "Done" : "Edit"}
-                    </Button>
+                  {!gitStatusForActions || allFiles.length === 0 ? (
+                    <p className="font-medium">none</p>
+                  ) : (
+                    <div className="space-y-2">
+                      <ScrollArea className="h-44 rounded-lg bg-card ring-1 ring-black/5 dark:bg-white/[0.025] dark:ring-white/5">
+                        <div className="space-y-1 p-1">
+                          {allFiles.map((file) => {
+                            const isExcluded = excludedFiles.has(file.path);
+                            return (
+                              <div
+                                key={file.path}
+                                className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
+                              >
+                                {isEditingFiles && (
+                                  <Checkbox
+                                    checked={!excludedFiles.has(file.path)}
+                                    onCheckedChange={() => {
+                                      setExcludedFiles((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(file.path)) {
+                                          next.delete(file.path);
+                                        } else {
+                                          next.add(file.path);
+                                        }
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
+                                  onClick={() => openChangedFileInEditor(file.path)}
+                                >
+                                  <StartTruncatedPath
+                                    path={file.path}
+                                    className={`flex-1${isExcluded ? " text-muted-foreground" : ""}`}
+                                  />
+                                  <span className="shrink-0">
+                                    {isExcluded ? (
+                                      <span className="text-muted-foreground">Excluded</span>
+                                    ) : (
+                                      <>
+                                        <span className="text-success">+{file.insertions}</span>
+                                        <span className="text-muted-foreground"> / </span>
+                                        <span className="text-destructive">-{file.deletions}</span>
+                                      </>
+                                    )}
+                                  </span>
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </ScrollArea>
+                      <div className="flex justify-end font-mono">
+                        <span className="text-success">
+                          +{selectedFiles.reduce((sum, f) => sum + f.insertions, 0)}
+                        </span>
+                        <span className="text-muted-foreground"> / </span>
+                        <span className="text-destructive">
+                          -{selectedFiles.reduce((sum, f) => sum + f.deletions, 0)}
+                        </span>
+                      </div>
+                    </div>
                   )}
                 </div>
-                {!gitStatusForActions || allFiles.length === 0 ? (
-                  <p className="font-medium">none</p>
-                ) : (
-                  <div className="space-y-2">
-                    <ScrollArea className="h-44 rounded-lg bg-card ring-1 ring-black/5 dark:bg-white/[0.025] dark:ring-white/5">
-                      <div className="space-y-1 p-1">
-                        {allFiles.map((file) => {
-                          const isExcluded = excludedFiles.has(file.path);
-                          return (
-                            <div
-                              key={file.path}
-                              className="flex w-full items-center gap-2 rounded-md px-2 py-1 font-mono hover:bg-accent/50"
-                            >
-                              {isEditingFiles && (
-                                <Checkbox
-                                  checked={!excludedFiles.has(file.path)}
-                                  onCheckedChange={() => {
-                                    setExcludedFiles((prev) => {
-                                      const next = new Set(prev);
-                                      if (next.has(file.path)) {
-                                        next.delete(file.path);
-                                      } else {
-                                        next.add(file.path);
-                                      }
-                                      return next;
-                                    });
-                                  }}
-                                />
-                              )}
-                              <button
-                                type="button"
-                                className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
-                                onClick={() => openChangedFileInEditor(file.path)}
-                              >
-                                <StartTruncatedPath
-                                  path={file.path}
-                                  className={`flex-1${isExcluded ? " text-muted-foreground" : ""}`}
-                                />
-                                <span className="shrink-0">
-                                  {isExcluded ? (
-                                    <span className="text-muted-foreground">Excluded</span>
-                                  ) : (
-                                    <>
-                                      <span className="text-success">+{file.insertions}</span>
-                                      <span className="text-muted-foreground"> / </span>
-                                      <span className="text-destructive">-{file.deletions}</span>
-                                    </>
+              ) : null}
+            </div>
+            {dialogIncludesPush ? (
+              <div className="space-y-5">
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium">
+                    Push branch to
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      where the commit becomes visible
+                    </span>
+                  </legend>
+                  {gitRemotesQuery.isPending && gitRemotes.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Loading configured remotes...</p>
+                  ) : gitRemotes.length === 0 ? (
+                    <p className="text-xs text-destructive">
+                      No configured remotes were found. Add a remote before pushing.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {gitRemotes.map((remote) => {
+                        const isSelected = remote.name === selectedPushRemoteName;
+                        return (
+                          <label
+                            key={remote.name}
+                            className={cn(
+                              "grid min-h-13 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-3 py-2.5",
+                              isSelected
+                                ? "border-foreground bg-foreground/[0.04]"
+                                : "border-border bg-background",
+                            )}
+                          >
+                            <input
+                              type="radio"
+                              name="git-action-push-remote"
+                              value={remote.name}
+                              checked={isSelected}
+                              onChange={() => setDialogPushRemoteName(remote.name)}
+                              className="size-4 accent-primary"
+                            />
+                            <span className="min-w-0">
+                              <span className="block text-sm font-medium">{remote.name}</span>
+                              <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                                {remote.url}
+                              </span>
+                            </span>
+                            <span className="text-right text-xs text-muted-foreground">
+                              {remote.isPrimary ? "primary" : "remote"}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </fieldset>
+                {dialogIncludesPullRequest ? (
+                  <>
+                    <fieldset className="space-y-2">
+                      <legend className="text-sm font-medium">
+                        Create PR in
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          repository that receives the PR
+                        </span>
+                      </legend>
+                      {gitRemotesQuery.isPending && prRepositoryOptions.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Loading repository destinations...
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {prRepositoryOptions.length === 0 ? (
+                            <p className="text-xs text-destructive">
+                              No repository paths could be read from the configured remotes.
+                            </p>
+                          ) : (
+                            prRepositoryOptions.map((option) => {
+                              const isSelected =
+                                !isCustomPrRepository && option.repository === selectedPrRepository;
+                              return (
+                                <label
+                                  key={`${option.remoteName}:${option.repository}`}
+                                  className={cn(
+                                    "grid min-h-13 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-3 py-2.5",
+                                    isSelected
+                                      ? "border-foreground bg-foreground/[0.04]"
+                                      : "border-border bg-background",
                                   )}
+                                >
+                                  <input
+                                    type="radio"
+                                    name="git-action-pr-repository"
+                                    value={option.repository}
+                                    checked={isSelected}
+                                    onChange={() => {
+                                      setIsCustomPrRepository(false);
+                                      setDialogPrRepository(option.repository);
+                                    }}
+                                    className="size-4 accent-primary"
+                                  />
+                                  <span className="min-w-0">
+                                    <span className="block text-sm font-medium">
+                                      {option.remoteName}
+                                    </span>
+                                    <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                                      {option.repository}
+                                    </span>
+                                  </span>
+                                  <span className="text-right text-xs text-muted-foreground">
+                                    {option.remoteName === preferredPrRemoteName
+                                      ? "recommended"
+                                      : option.isPrimary
+                                        ? "primary"
+                                        : "remote"}
+                                  </span>
+                                </label>
+                              );
+                            })
+                          )}
+                          <label
+                            className={cn(
+                              "grid min-h-11 grid-cols-[1rem_minmax(0,1fr)] items-center gap-3 rounded-md border px-3 py-2",
+                              isCustomPrRepository
+                                ? "border-foreground bg-foreground/[0.04]"
+                                : "border-border bg-background",
+                            )}
+                          >
+                            <input
+                              type="radio"
+                              name="git-action-pr-repository"
+                              value="custom"
+                              checked={isCustomPrRepository}
+                              onChange={() => setIsCustomPrRepository(true)}
+                              className="size-4 accent-primary"
+                            />
+                            <span>
+                              <span className="block text-sm font-medium">Other repository</span>
+                              <span className="block text-xs text-muted-foreground">
+                                Enter the provider repository path
+                              </span>
+                            </span>
+                          </label>
+                          {isCustomPrRepository ? (
+                            <label
+                              className="block space-y-1.5"
+                              htmlFor="git-action-pr-repository-custom"
+                            >
+                              <span className="text-xs font-medium">Repository path</span>
+                              <Input
+                                id="git-action-pr-repository-custom"
+                                value={customPrRepository}
+                                onChange={(event) => setCustomPrRepository(event.target.value)}
+                                placeholder="owner/repository"
+                              />
+                            </label>
+                          ) : null}
+                        </div>
+                      )}
+                    </fieldset>
+                    <fieldset className="space-y-2">
+                      <legend className="text-sm font-medium">
+                        Base branch
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          target branch for the PR
+                        </span>
+                      </legend>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {baseBranchOptions.map((option) => {
+                          const isSelected =
+                            !isCustomPrBaseBranch && option.name === selectedPrBaseBranch;
+                          return (
+                            <label
+                              key={option.name}
+                              className={cn(
+                                "flex min-h-10 items-center gap-2 rounded-md border px-3 py-2",
+                                isSelected
+                                  ? "border-foreground bg-foreground/[0.04]"
+                                  : "border-border bg-background",
+                              )}
+                            >
+                              <input
+                                type="radio"
+                                name="git-action-pr-base-branch"
+                                value={option.name}
+                                checked={isSelected}
+                                onChange={() => {
+                                  setIsCustomPrBaseBranch(false);
+                                  setDialogPrBaseBranch(option.name);
+                                }}
+                                className="size-4 accent-primary"
+                              />
+                              <span className="font-mono text-xs">{option.name}</span>
+                              {option.isDefault ? (
+                                <span className="ml-auto text-xs text-muted-foreground">
+                                  default
                                 </span>
-                              </button>
-                            </div>
+                              ) : null}
+                            </label>
                           );
                         })}
+                        <label
+                          className={cn(
+                            "flex min-h-10 items-center gap-2 rounded-md border px-3 py-2",
+                            isCustomPrBaseBranch
+                              ? "border-foreground bg-foreground/[0.04]"
+                              : "border-border bg-background",
+                          )}
+                        >
+                          <input
+                            type="radio"
+                            name="git-action-pr-base-branch"
+                            value="custom"
+                            checked={isCustomPrBaseBranch}
+                            onChange={() => setIsCustomPrBaseBranch(true)}
+                            className="size-4 accent-primary"
+                          />
+                          <span className="font-mono text-xs">Other branch</span>
+                        </label>
                       </div>
-                    </ScrollArea>
-                    <div className="flex justify-end font-mono">
-                      <span className="text-success">
-                        +{selectedFiles.reduce((sum, f) => sum + f.insertions, 0)}
-                      </span>
-                      <span className="text-muted-foreground"> / </span>
-                      <span className="text-destructive">
-                        -{selectedFiles.reduce((sum, f) => sum + f.deletions, 0)}
-                      </span>
-                    </div>
-                  </div>
-                )}
+                      {isCustomPrBaseBranch ? (
+                        <label
+                          className="block space-y-1.5"
+                          htmlFor="git-action-pr-base-branch-custom"
+                        >
+                          <span className="text-xs font-medium">Branch name</span>
+                          <Input
+                            id="git-action-pr-base-branch-custom"
+                            value={customPrBaseBranch}
+                            onChange={(event) => setCustomPrBaseBranch(event.target.value)}
+                            placeholder="main"
+                          />
+                        </label>
+                      ) : null}
+                      <p className="text-xs text-muted-foreground">
+                        Branches come from local and fetched remote refs.
+                      </p>
+                    </fieldset>
+                  </>
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  {dialogIncludesPullRequest
+                    ? "Commit locally, push the selected remote, then open the PR in the selected repository."
+                    : "Commit locally, then publish the branch to the selected remote."}
+                </p>
               </div>
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-medium">Commit message (optional)</p>
-              <Textarea
-                value={dialogCommitMessage}
-                onChange={(event) => setDialogCommitMessage(event.target.value)}
-                placeholder="Leave empty to auto-generate"
-                size="sm"
-              />
-            </div>
+            ) : null}
+            {dialogWillCommit ? (
+              <div className="space-y-1">
+                <label className="text-sm font-medium" htmlFor="git-action-commit-message">
+                  Commit message (optional)
+                </label>
+                <Textarea
+                  id="git-action-commit-message"
+                  value={dialogCommitMessage}
+                  onChange={(event) => setDialogCommitMessage(event.target.value)}
+                  placeholder="Leave empty to auto-generate"
+                  size="sm"
+                />
+              </div>
+            ) : null}
           </DialogPanel>
           <DialogFooter variant="bare">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setIsCommitDialogOpen(false);
-                setDialogCommitMessage("");
-                setExcludedFiles(new Set());
-                setIsEditingFiles(false);
-              }}
-            >
+            <Button variant="outline" size="sm" onClick={resetGitActionDialog}>
               Cancel
             </Button>
+            {dialogAction === "commit" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={noneSelected}
+                onClick={runDialogActionOnNewBranch}
+              >
+                Commit on new refName
+              </Button>
+            ) : null}
             <Button
-              variant="outline"
               size="sm"
-              disabled={noneSelected}
-              onClick={runDialogActionOnNewBranch}
+              disabled={(dialogWillCommit && noneSelected) || !destinationSelectionReady}
+              onClick={runDialogAction}
             >
-              Commit on new refName
-            </Button>
-            <Button size="sm" disabled={noneSelected} onClick={runDialogAction}>
-              Commit
+              {dialogSubmitLabel}
             </Button>
           </DialogFooter>
         </DialogPopup>
