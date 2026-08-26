@@ -1005,6 +1005,20 @@ export default function GitActionsControl({
   const activeServerThread = useThread(activeThreadRef, {
     waitForShell: activeDraftThread !== null,
   });
+  const sourceControlUserRequest = useMemo(() => {
+    if (!activeServerThread) {
+      return undefined;
+    }
+
+    const request = activeServerThread.messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.text.trim())
+      .filter((message) => message.length > 0)
+      .join("\n\n")
+      .trim();
+
+    return request.length > 0 ? request.slice(0, 12_000) : undefined;
+  }, [activeServerThread]);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
@@ -1408,6 +1422,7 @@ export default function GitActionsControl({
         actionId,
         action,
         ...(commitMessage ? { commitMessage } : {}),
+        ...(sourceControlUserRequest ? { userRequest: sourceControlUserRequest } : {}),
         ...(featureBranch ? { featureBranch } : {}),
         ...(filePaths ? { filePaths } : {}),
         onProgress: applyProgressEvent,

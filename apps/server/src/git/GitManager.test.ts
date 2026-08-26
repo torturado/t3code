@@ -587,6 +587,7 @@ function runStackedAction(
     action: "commit" | "push" | "create_pr" | "commit_push" | "commit_push_pr";
     actionId?: string;
     commitMessage?: string;
+    userRequest?: string;
     featureBranch?: boolean;
     filePaths?: readonly string[];
   },
@@ -1670,6 +1671,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* initRepo(repoDir);
       NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
       let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
+      let generatedUserRequest: string | undefined;
 
       const { manager } = yield* makeManager({
         serverSettings: {
@@ -1681,6 +1683,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generateCommitMessage: (input) => {
             generatedPolicy = input.policy;
+            generatedUserRequest = input.userRequest;
             return Effect.succeed({ subject: "Implement stacked git actions", body: "" });
           },
         },
@@ -1688,6 +1691,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit",
+        userRequest: "Fix the timeout users see when reconnecting.",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
@@ -1695,6 +1699,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(result.push.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("skipped_not_requested");
       expect(generatedPolicy).toMatchObject({ commitInstructions: "Use a direct tone." });
+      expect(generatedUserRequest).toBe("Fix the timeout users see when reconnecting.");
       expect(result.toast).toMatchObject({
         description: "Implement stacked git actions",
         cta: {
@@ -2780,6 +2785,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["config", "branch.feature-create-pr.gh-merge-base", "main"]);
       let generatedPolicy: TextGeneration.PrContentGenerationInput["policy"] = undefined;
       let generatedChangeRequestTemplate: string | undefined;
+      let generatedUserRequest: string | undefined;
 
       const { manager, ghCalls } = yield* makeManager({
         serverSettings: {
@@ -2792,6 +2798,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           generatePrContent: (input) => {
             generatedPolicy = input.policy;
             generatedChangeRequestTemplate = input.changeRequestTemplate;
+            generatedUserRequest = input.userRequest;
             return Effect.succeed({
               title: "Add stacked git actions",
               body: "## What changed?\nAdded stacked git actions.",
@@ -2817,6 +2824,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit_push_pr",
+        userRequest: "Users should be able to publish this change safely.",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
@@ -2826,6 +2834,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         changeRequestInstructions: "Lead with user impact.",
       });
       expect(generatedChangeRequestTemplate).toBe("## What changed?\n\n## Verification");
+      expect(generatedUserRequest).toBe("Users should be able to publish this change safely.");
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
       expect(
         ghCalls.some((call) => call.includes("pr create --base main --head feature-create-pr")),

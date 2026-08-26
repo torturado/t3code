@@ -21,6 +21,8 @@ export interface CommitMessageGenerationInput {
   branch: string | null;
   stagedSummary: string;
   stagedPatch: string;
+  /** User-authored context that explains why the change was made. */
+  userRequest?: string | undefined;
   /** When true, the model also returns a semantic branch name for the change. */
   includeBranch?: boolean;
   policy?: TextGenerationPolicy | undefined;
@@ -42,6 +44,8 @@ export interface PrContentGenerationInput {
   commitSummary: string;
   diffSummary: string;
   diffPatch: string;
+  /** User-authored context that explains why the change was made. */
+  userRequest?: string | undefined;
   changeRequestTemplate?: string | undefined;
   policy?: TextGenerationPolicy | undefined;
   /** What model and provider to use for generation. */

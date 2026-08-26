@@ -171,6 +171,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         branch: input.branch,
         stagedSummary: input.stagedSummary,
         stagedPatch: input.stagedPatch,
+        userRequest: input.userRequest,
         includeBranch: input.includeBranch === true,
         policy: input.policy,
       });
@@ -200,6 +201,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         commitSummary: input.commitSummary,
         diffSummary: input.diffSummary,
         diffPatch: input.diffPatch,
+        userRequest: input.userRequest,
         policy: input.policy,
         changeRequestTemplate: input.changeRequestTemplate,
       });

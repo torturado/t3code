@@ -1477,6 +1477,7 @@ export const make = Effect.gen(function* () {
     function* (input: {
       cwd: string;
       branch: string | null;
+      userRequest?: string;
       commitMessage?: string;
       /** When true, also produce a semantic feature branch name. */
       includeBranch?: boolean;
@@ -1508,6 +1509,7 @@ export const make = Effect.gen(function* () {
           branch: input.branch,
           stagedSummary: limitContext(context.stagedSummary, 8_000),
           stagedPatch: limitContext(context.stagedPatch, 50_000),
+          ...(input.userRequest ? { userRequest: input.userRequest } : {}),
           ...(input.includeBranch ? { includeBranch: true } : {}),
           ...(policy ? { policy } : {}),
           modelSelection: input.settings.modelSelection,
@@ -1528,6 +1530,7 @@ export const make = Effect.gen(function* () {
     cwd: string,
     action: "commit" | "commit_push" | "commit_push_pr",
     branch: string | null,
+    userRequest?: string,
     commitMessage?: string,
     preResolvedSuggestion?: CommitAndBranchSuggestion,
     filePaths?: readonly string[],
@@ -1557,6 +1560,7 @@ export const make = Effect.gen(function* () {
       suggestion = yield* resolveCommitAndBranchSuggestion({
         cwd,
         branch,
+        ...(userRequest ? { userRequest } : {}),
         ...(commitMessage ? { commitMessage } : {}),
         ...(filePaths ? { filePaths } : {}),
         settings,
@@ -1641,6 +1645,7 @@ export const make = Effect.gen(function* () {
     cwd: string,
     fallbackBranch: string | null,
     emit: GitActionProgressEmitter,
+    userRequest?: string,
   ) {
     const provider = yield* sourceControlProvider(cwd);
     const terms = getChangeRequestTerminologyForKind(provider.kind);
@@ -1699,6 +1704,7 @@ export const make = Effect.gen(function* () {
       commitSummary: limitContext(rangeContext.commitSummary, 20_000),
       diffSummary: limitContext(rangeContext.diffSummary, 20_000),
       diffPatch: limitContext(rangeContext.diffPatch, 60_000),
+      ...(userRequest ? { userRequest } : {}),
       ...(changeRequestTemplate ? { changeRequestTemplate } : {}),
       ...(policy ? { policy } : {}),
       modelSelection: settings.modelSelection,
@@ -2080,12 +2086,14 @@ export const make = Effect.gen(function* () {
     branch: string | null,
     commitMessage?: string,
     filePaths?: readonly string[],
+    userRequest?: string,
   ) {
     const suggestion = yield* resolveCommitAndBranchSuggestion({
       cwd,
       branch,
       ...(commitMessage ? { commitMessage } : {}),
       ...(filePaths ? { filePaths } : {}),
+      ...(userRequest ? { userRequest } : {}),
       includeBranch: true,
       settings,
     });
@@ -2217,6 +2225,7 @@ export const make = Effect.gen(function* () {
             initialStatus.branch,
             input.commitMessage,
             input.filePaths,
+            input.userRequest,
           );
           branchStep = result.branchStep;
           commitMessageForStep = result.resolvedCommitMessage;
@@ -2242,6 +2251,7 @@ export const make = Effect.gen(function* () {
                   input.cwd,
                   commitAction,
                   currentBranch,
+                  input.userRequest,
                   commitMessageForStep,
                   preResolvedCommitSuggestion,
                   input.filePaths,
@@ -2275,7 +2285,13 @@ export const make = Effect.gen(function* () {
               .pipe(
                 Effect.tap(() => Ref.set(currentPhase, Option.some("pr"))),
                 Effect.flatMap(() =>
-                  runPrStep(textGenerationSettings, input.cwd, currentBranch, progress.emit),
+                  runPrStep(
+                    textGenerationSettings,
+                    input.cwd,
+                    currentBranch,
+                    progress.emit,
+                    input.userRequest,
+                  ),
                 ),
               )
           : { status: "skipped_not_requested" as const };
