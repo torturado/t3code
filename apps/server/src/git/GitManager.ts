@@ -185,6 +185,7 @@ interface BranchHeadContext {
   headRepositoryNameWithOwner: string | null;
   headRepositoryOwnerLogin: string | null;
   isCrossRepository: boolean;
+  targetRepositories: ReadonlyArray<string>;
 }
 
 function parseRepositoryNameFromPullRequestUrl(url: string): string | null {
@@ -1165,12 +1166,54 @@ export const make = Effect.gen(function* () {
     const shouldProbeLocalBranchSelector =
       headBranchFromUpstream.length === 0 || headBranch === details.branch;
 
-    const [remoteRepository, originRepository] = yield* Effect.all(
-      [
-        resolveRemoteRepositoryContext(cwd, remoteName),
-        resolveRemoteRepositoryContext(cwd, "origin"),
-      ],
+    const remoteNamesResult = yield* gitCore
+      .execute({
+        operation: "GitManager.listRemoteNames",
+        cwd,
+        args: ["remote"],
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+        maxOutputBytes: 64 * 1024,
+      })
+      .pipe(Effect.orElseSucceed(() => null));
+    const remoteNames =
+      remoteNamesResult?.exitCode === 0
+        ? remoteNamesResult.stdout
+            .split(/\r?\n/u)
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0)
+        : [];
+    const remoteNamesToResolve = [
+      ...new Set([...(remoteName ? [remoteName] : []), "origin", ...remoteNames]),
+    ];
+    const remoteRepositories = yield* Effect.all(
+      remoteNamesToResolve.map((name) => resolveRemoteRepositoryContext(cwd, name)),
       { concurrency: "unbounded" },
+    );
+    const emptyRemoteRepository = {
+      remoteUrlKey: null,
+      repositoryNameWithOwner: null,
+      ownerLogin: null,
+    } as const;
+    const remoteRepositoryByName = new Map(
+      remoteNamesToResolve.map(
+        (name, index) => [name, remoteRepositories[index] ?? emptyRemoteRepository] as const,
+      ),
+    );
+    const remoteRepository = remoteName
+      ? (remoteRepositoryByName.get(remoteName) ?? emptyRemoteRepository)
+      : emptyRemoteRepository;
+    const originRepository = remoteRepositoryByName.get("origin") ?? emptyRemoteRepository;
+    const targetRepositories = [
+      ...new Set(
+        remoteRepositories.flatMap(({ repositoryNameWithOwner }) =>
+          repositoryNameWithOwner ? [repositoryNameWithOwner] : [],
+        ),
+      ),
+    ].filter(
+      (repository) =>
+        remoteRepository.repositoryNameWithOwner === null ||
+        repository.toLowerCase() !== remoteRepository.repositoryNameWithOwner.toLowerCase(),
     );
 
     const isCrossRepository =
@@ -1228,6 +1271,7 @@ export const make = Effect.gen(function* () {
       headRepositoryNameWithOwner: remoteRepository.repositoryNameWithOwner,
       headRepositoryOwnerLogin: remoteRepository.ownerLogin,
       isCrossRepository,
+      targetRepositories,
     } satisfies BranchHeadContext;
   });
 
@@ -1277,37 +1321,54 @@ export const make = Effect.gen(function* () {
       | "headRepositoryNameWithOwner"
       | "headRepositoryOwnerLogin"
       | "isCrossRepository"
+      | "targetRepositories"
     >,
     target?: SourceControlProvider.SourceControlRefSelector,
   ) {
-    for (const headSelector of headContext.headSelectors) {
-      const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
-        cwd,
-        headSelector,
-        state: "open",
-        limit: 1,
-        ...(target ? { target } : {}),
-      });
-      const normalizedPullRequests = pullRequests
-        .filter(
-          (pullRequest) =>
-            target?.refName === undefined || pullRequest.baseRefName === target.refName,
-        )
-        .map(toPullRequestInfo);
+    const provider = yield* sourceControlProvider(cwd);
+    const targetRepositories = target?.repository
+      ? [target.repository]
+      : provider.kind === "github"
+        ? [undefined, ...headContext.targetRepositories]
+        : [undefined];
 
-      const firstPullRequest = normalizedPullRequests.find((pullRequest) =>
-        matchesBranchHeadContext(pullRequest, headContext),
-      );
-      if (firstPullRequest) {
-        return {
-          number: firstPullRequest.number,
-          title: firstPullRequest.title,
-          url: firstPullRequest.url,
-          baseRefName: firstPullRequest.baseRefName,
-          headRefName: firstPullRequest.headRefName,
+    for (const headSelector of headContext.headSelectors) {
+      for (const targetRepository of targetRepositories) {
+        const queryHeadSelector =
+          targetRepository && headContext.headRepositoryOwnerLogin
+            ? `${headContext.headRepositoryOwnerLogin}:${headContext.headBranch}`
+            : headSelector;
+        const pullRequests = yield* provider.listChangeRequests({
+          cwd,
+          headSelector: queryHeadSelector,
           state: "open",
-          updatedAt: Option.none(),
-        } satisfies PullRequestInfo;
+          limit: 1,
+          ...(target ? { target } : {}),
+          ...(targetRepository && targetRepository !== target?.repository
+            ? { targetRepository }
+            : {}),
+        });
+        const normalizedPullRequests = pullRequests
+          .filter(
+            (pullRequest) =>
+              target?.refName === undefined || pullRequest.baseRefName === target.refName,
+          )
+          .map(toPullRequestInfo);
+
+        const firstPullRequest = normalizedPullRequests.find((pullRequest) =>
+          matchesBranchHeadContext(pullRequest, headContext),
+        );
+        if (firstPullRequest) {
+          return {
+            number: firstPullRequest.number,
+            title: firstPullRequest.title,
+            url: firstPullRequest.url,
+            baseRefName: firstPullRequest.baseRefName,
+            headRefName: firstPullRequest.headRefName,
+            state: "open",
+            updatedAt: Option.none(),
+          } satisfies PullRequestInfo;
+        }
       }
     }
 
@@ -1318,21 +1379,31 @@ export const make = Effect.gen(function* () {
     cwd: string,
     headContext: BranchHeadContext,
   ) {
+    const provider = yield* sourceControlProvider(cwd);
+    const targetRepositories =
+      provider.kind === "github" ? [undefined, ...headContext.targetRepositories] : [undefined];
     const parsedByNumber = new Map<number, PullRequestInfo>();
 
     for (const headSelector of headContext.headSelectors) {
-      const pullRequests = yield* (yield* sourceControlProvider(cwd)).listChangeRequests({
-        cwd,
-        headSelector,
-        state: "all",
-        limit: 20,
-      });
+      for (const targetRepository of targetRepositories) {
+        const queryHeadSelector =
+          targetRepository && headContext.headRepositoryOwnerLogin
+            ? `${headContext.headRepositoryOwnerLogin}:${headContext.headBranch}`
+            : headSelector;
+        const pullRequests = yield* provider.listChangeRequests({
+          cwd,
+          headSelector: queryHeadSelector,
+          ...(targetRepository ? { targetRepository } : {}),
+          state: "all",
+          limit: 20,
+        });
 
-      for (const pr of pullRequests.map(toPullRequestInfo)) {
-        if (!matchesBranchHeadContext(pr, headContext)) {
-          continue;
+        for (const pr of pullRequests.map(toPullRequestInfo)) {
+          if (!matchesBranchHeadContext(pr, headContext)) {
+            continue;
+          }
+          parsedByNumber.set(pr.number, pr);
         }
-        parsedByNumber.set(pr.number, pr);
       }
     }
 

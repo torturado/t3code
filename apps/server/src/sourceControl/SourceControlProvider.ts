@@ -89,6 +89,7 @@ export class SourceControlProvider extends Context.Service<
       readonly source?: SourceControlRefSelector;
       readonly target?: SourceControlRefSelector;
       readonly headSelector: string;
+      readonly targetRepository?: string;
       readonly state: ChangeRequestState | "all";
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<ChangeRequest>, SourceControlProviderError>;

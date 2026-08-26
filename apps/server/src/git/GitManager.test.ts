@@ -44,6 +44,7 @@ import * as GitManager from "./GitManager.ts";
 interface FakeGhScenario {
   prListSequence?: string[];
   prListByHeadSelector?: Record<string, string>;
+  prListByRepositoryAndHeadSelector?: Record<string, string>;
   prListSequenceByHeadSelector?: Record<string, string[]>;
   createdPrUrl?: string;
   defaultBranch?: string;
@@ -373,15 +374,26 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
         headSelectorIndex >= 0 && headSelectorIndex < args.length - 1
           ? args[headSelectorIndex + 1]
           : undefined;
+      const repositoryIndex = args.findIndex((value) => value === "--repo");
+      const repository =
+        repositoryIndex >= 0 && repositoryIndex < args.length - 1
+          ? args[repositoryIndex + 1]
+          : undefined;
       const mappedQueue =
         typeof headSelector === "string"
           ? prListQueueByHeadSelector.get(headSelector)?.shift()
+          : undefined;
+      const mappedRepositoryStdout =
+        typeof repository === "string" && typeof headSelector === "string"
+          ? scenario.prListByRepositoryAndHeadSelector?.[`${repository}::${headSelector}`]
           : undefined;
       const mappedStdout =
         typeof headSelector === "string"
           ? scenario.prListByHeadSelector?.[headSelector]
           : undefined;
-      const stdout = (mappedQueue ?? mappedStdout ?? prListQueue.shift() ?? "[]") + "\n";
+      const stdout =
+        (mappedQueue ?? mappedRepositoryStdout ?? mappedStdout ?? prListQueue.shift() ?? "[]") +
+        "\n";
       return Effect.succeed(fakeGhOutput(stdout));
     }
 
@@ -724,6 +736,77 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         headRef: "feature/status-open-pr",
         state: "open",
       });
+    }),
+  );
+
+  it.effect("status finds a PR opened against another configured GitHub remote", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-upstream-pr"]);
+      const originDir = yield* createBareRemote();
+      const upstreamDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["remote", "add", "upstream", upstreamDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-upstream-pr"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:torturado/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "upstream",
+        "https://github.com/pingdotgg/codething-mvp.git",
+        upstreamDir,
+      );
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/status-upstream-pr": "[]",
+          },
+          prListByRepositoryAndHeadSelector: {
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            "pingdotgg/codething-mvp::torturado:feature/status-upstream-pr": JSON.stringify([
+              {
+                number: 42,
+                title: "Upstream PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+                baseRefName: "main",
+                headRefName: "feature/status-upstream-pr",
+                state: "OPEN",
+                isCrossRepository: true,
+                headRepository: {
+                  nameWithOwner: "torturado/codething-mvp",
+                },
+                headRepositoryOwner: {
+                  login: "torturado",
+                },
+              },
+            ]),
+          },
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+
+      expect(status.pr).toEqual({
+        number: 42,
+        title: "Upstream PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+        baseRef: "main",
+        headRef: "feature/status-upstream-pr",
+        state: "open",
+      });
+      expect(
+        ghCalls.some((call) =>
+          call.includes(
+            "pr list --repo pingdotgg/codething-mvp --head torturado:feature/status-upstream-pr",
+          ),
+        ),
+      ).toBe(true);
     }),
   );
 
