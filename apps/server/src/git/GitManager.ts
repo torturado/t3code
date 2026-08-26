@@ -1153,8 +1153,11 @@ export const make = Effect.gen(function* () {
   const resolveBranchHeadContext = Effect.fn("resolveBranchHeadContext")(function* (
     cwd: string,
     details: { branch: string; upstreamRef: string | null },
+    preferredRemoteName?: string,
   ) {
-    const remoteName = yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`);
+    const remoteName =
+      preferredRemoteName ??
+      (yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`));
     const headBranchFromUpstream = details.upstreamRef
       ? extractBranchNameFromRemoteRef(details.upstreamRef, { remoteName })
       : "";
@@ -1186,7 +1189,9 @@ export const make = Effect.gen(function* () {
     const remoteAliasHeadSelector =
       remoteName && headBranch.length > 0 ? `${remoteName}:${headBranch}` : null;
     const shouldProbeRemoteOwnedSelectors =
-      isCrossRepository || (remoteName !== null && remoteName !== "origin");
+      isCrossRepository ||
+      (remoteName !== null && remoteName !== "origin") ||
+      preferredRemoteName !== undefined;
 
     const headSelectors: string[] = [];
     if (isCrossRepository && shouldProbeRemoteOwnedSelectors) {
@@ -1213,7 +1218,9 @@ export const make = Effect.gen(function* () {
       headBranch,
       headSelectors,
       preferredHeadSelector:
-        ownerHeadSelector && isCrossRepository ? ownerHeadSelector : headBranch,
+        ownerHeadSelector && (isCrossRepository || preferredRemoteName !== undefined)
+          ? ownerHeadSelector
+          : headBranch,
       remoteName,
       headRemoteUrlKey:
         remoteRepository.remoteUrlKey ??
@@ -1660,6 +1667,7 @@ export const make = Effect.gen(function* () {
     userRequest?: string,
     prRepository?: string,
     prBaseBranch?: string,
+    pushRemoteName?: string,
   ) {
     const provider = yield* sourceControlProvider(cwd);
     const terms = getChangeRequestTerminologyForKind(provider.kind);
@@ -1680,10 +1688,14 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    const headContext = yield* resolveBranchHeadContext(cwd, {
-      branch,
-      upstreamRef: details.upstreamRef,
-    });
+    const headContext = yield* resolveBranchHeadContext(
+      cwd,
+      {
+        branch,
+        upstreamRef: details.upstreamRef,
+      },
+      pushRemoteName,
+    );
 
     const baseBranch = yield* resolveBaseBranch(
       cwd,
@@ -2321,6 +2333,7 @@ export const make = Effect.gen(function* () {
                     input.userRequest,
                     input.prRepository,
                     input.prBaseBranch,
+                    input.pushRemoteName,
                   ),
                 ),
               )

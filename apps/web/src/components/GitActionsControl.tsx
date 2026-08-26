@@ -13,6 +13,7 @@ import type {
   SourceControlProviderKind,
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryVisibility,
+  VcsRef,
   VcsStatusResult,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -361,6 +362,34 @@ function actionLabel(action: GitStackedAction, shortChangeRequestLabel: string):
   if (action === "create_pr") return `Push & create ${shortChangeRequestLabel}`;
   if (action === "commit_push") return "Commit & push";
   return `Commit, push & create ${shortChangeRequestLabel}`;
+}
+
+function repositoryPathFromRemoteUrl(remoteUrl: string): string | null {
+  const trimmedUrl = remoteUrl.trim();
+  const scpUrl = trimmedUrl.includes("://")
+    ? null
+    : /^(?:[^@\s]+@)?([^:\s]+):(.+)$/u.exec(trimmedUrl);
+  const normalizedUrl = scpUrl ? `https://${scpUrl[2]}/${scpUrl[3]}` : trimmedUrl;
+
+  try {
+    const path = new URL(normalizedUrl).pathname.replace(/^\/+|\/+$/gu, "");
+    const repository = path.replace(/\.git$/u, "");
+    const parts = repository.split("/").filter((part) => part.length > 0);
+    const gitSegmentIndex = parts.indexOf("_git");
+    if (gitSegmentIndex > 0 && gitSegmentIndex + 1 < parts.length) {
+      return `${parts[gitSegmentIndex - 1]}/${parts[gitSegmentIndex + 1]}`;
+    }
+    return repository.length > 0 ? repository : null;
+  } catch {
+    return null;
+  }
+}
+
+function branchNameFromRef(ref: VcsRef): string {
+  if (ref.isRemote && ref.remoteName && ref.name.startsWith(`${ref.remoteName}/`)) {
+    return ref.name.slice(ref.remoteName.length + 1);
+  }
+  return ref.name;
 }
 
 function GitActionItemIcon({
@@ -1049,9 +1078,13 @@ export default function GitActionsControl({
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
   const [dialogAction, setDialogAction] = useState<GitStackedAction>("commit");
   const [dialogCommitMessage, setDialogCommitMessage] = useState("");
-  const [dialogPushRemoteName, setDialogPushRemoteName] = useState("origin");
+  const [dialogPushRemoteName, setDialogPushRemoteName] = useState("");
   const [dialogPrRepository, setDialogPrRepository] = useState("");
   const [dialogPrBaseBranch, setDialogPrBaseBranch] = useState("");
+  const [isCustomPrRepository, setIsCustomPrRepository] = useState(false);
+  const [customPrRepository, setCustomPrRepository] = useState("");
+  const [isCustomPrBaseBranch, setIsCustomPrBaseBranch] = useState(false);
+  const [customPrBaseBranch, setCustomPrBaseBranch] = useState("");
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
@@ -1169,12 +1202,104 @@ export default function GitActionsControl({
     : "Review where this action will publish the current branch.";
   const dialogSubmitLabel = actionLabel(dialogAction, changeRequestTerminology.shortLabel);
 
+  const gitRemotesQuery = useEnvironmentQuery(
+    activeEnvironmentId !== null && gitCwd !== null && isCommitDialogOpen && dialogIncludesPush
+      ? vcsEnvironment.listRemotes({
+          environmentId: activeEnvironmentId,
+          input: { cwd: gitCwd },
+        })
+      : null,
+  );
+  const gitBranchRefsQuery = useEnvironmentQuery(
+    activeEnvironmentId !== null &&
+      gitCwd !== null &&
+      isCommitDialogOpen &&
+      dialogIncludesPullRequest
+      ? vcsEnvironment.listRefs({
+          environmentId: activeEnvironmentId,
+          input: {
+            cwd: gitCwd,
+            includeMatchingRemoteRefs: true,
+            limit: 100,
+          },
+        })
+      : null,
+  );
+  const gitRemotes = gitRemotesQuery.data?.remotes ?? [];
+  const defaultPushRemoteName =
+    gitRemotes.find((remote) => remote.isPrimary)?.name ?? gitRemotes[0]?.name ?? "";
+  const preferredPrRemoteName =
+    gitRemotes.find((remote) => remote.name === "upstream")?.name ??
+    gitRemotes.find((remote) => !remote.isPrimary)?.name ??
+    defaultPushRemoteName;
+  const prRepositoryOptions = useMemo(
+    () =>
+      gitRemotes.flatMap((remote) => {
+        const repository = repositoryPathFromRemoteUrl(remote.url);
+        return repository === null
+          ? []
+          : [
+              {
+                remoteName: remote.name,
+                repository,
+                isPrimary: remote.isPrimary,
+              },
+            ];
+      }),
+    [gitRemotes],
+  );
+  const defaultPrRepository =
+    prRepositoryOptions.find((option) => option.remoteName === preferredPrRemoteName)?.repository ??
+    prRepositoryOptions[0]?.repository ??
+    "";
+  const baseBranchOptions = useMemo(() => {
+    const branches = new Map<string, boolean>();
+    for (const ref of gitBranchRefsQuery.data?.refs ?? []) {
+      const branch = branchNameFromRef(ref);
+      if (branch.length > 0) {
+        branches.set(branch, (branches.get(branch) ?? false) || ref.isDefault);
+      }
+    }
+    const statusBaseBranch = gitStatusForActions?.pr?.baseRef;
+    if (statusBaseBranch) {
+      branches.set(statusBaseBranch, true);
+    }
+    const options = [...branches.entries()]
+      .toSorted(([leftName, leftDefault], [rightName, rightDefault]) => {
+        if (leftDefault !== rightDefault) return leftDefault ? -1 : 1;
+        return leftName.localeCompare(rightName);
+      })
+      .map(([name, isDefault]) => ({ name, isDefault }));
+    return options.length > 0
+      ? options
+      : [{ name: gitStatusForActions?.pr?.baseRef ?? "main", isDefault: true }];
+  }, [gitBranchRefsQuery.data?.refs, gitStatusForActions?.pr?.baseRef]);
+  const defaultPrBaseBranch =
+    baseBranchOptions.find((option) => option.isDefault)?.name ??
+    baseBranchOptions[0]?.name ??
+    "main";
+  const selectedPushRemoteName = dialogPushRemoteName || defaultPushRemoteName;
+  const selectedPrRepository = isCustomPrRepository
+    ? customPrRepository.trim()
+    : dialogPrRepository || defaultPrRepository;
+  const selectedPrBaseBranch = isCustomPrBaseBranch
+    ? customPrBaseBranch.trim()
+    : dialogPrBaseBranch || defaultPrBaseBranch;
+  const destinationSelectionReady =
+    (!dialogIncludesPush || selectedPushRemoteName.length > 0) &&
+    (!dialogIncludesPullRequest ||
+      (selectedPrRepository.length > 0 && selectedPrBaseBranch.length > 0));
+
   const resetGitActionDialog = () => {
     setIsCommitDialogOpen(false);
     setDialogCommitMessage("");
-    setDialogPushRemoteName("origin");
+    setDialogPushRemoteName("");
     setDialogPrRepository("");
     setDialogPrBaseBranch("");
+    setIsCustomPrRepository(false);
+    setCustomPrRepository("");
+    setIsCustomPrBaseBranch(false);
+    setCustomPrBaseBranch("");
     setExcludedFiles(new Set());
     setIsEditingFiles(false);
   };
@@ -1182,9 +1307,13 @@ export default function GitActionsControl({
   const openGitActionDialog = (action: GitStackedAction) => {
     setDialogAction(action);
     setDialogCommitMessage("");
-    setDialogPushRemoteName("origin");
+    setDialogPushRemoteName("");
     setDialogPrRepository("");
     setDialogPrBaseBranch("");
+    setIsCustomPrRepository(false);
+    setCustomPrRepository("");
+    setIsCustomPrBaseBranch(false);
+    setCustomPrBaseBranch("");
     setExcludedFiles(new Set());
     setIsEditingFiles(false);
     setIsCommitDialogOpen(true);
@@ -1723,9 +1852,10 @@ export default function GitActionsControl({
     if (!isCommitDialogOpen) return;
     const action = dialogAction;
     const commitMessage = dialogWillCommit ? dialogCommitMessage.trim() : "";
-    const pushRemoteName = dialogPushRemoteName.trim();
-    const prRepository = dialogPrRepository.trim();
-    const prBaseBranch = dialogPrBaseBranch.trim();
+    const pushRemoteName = selectedPushRemoteName.trim();
+    const prRepository = selectedPrRepository.trim();
+    const prBaseBranch = selectedPrBaseBranch.trim();
+    if (!destinationSelectionReady) return;
     resetGitActionDialog();
     void runGitActionWithToast({
       action,
@@ -1964,15 +2094,15 @@ export default function GitActionsControl({
                 <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
                   <span className="text-muted-foreground">Push</span>
                   <span className="font-mono">
-                    {dialogPushRemoteName.trim() || "configured upstream"}/
+                    {selectedPushRemoteName || "no remote selected"}/
                     {gitStatusForActions?.refName ?? "current branch"}
                   </span>
                   {dialogIncludesPullRequest ? (
                     <>
                       <span className="text-muted-foreground">PR</span>
                       <span className="font-mono">
-                        {dialogPrRepository.trim() || "provider default"}/
-                        {dialogPrBaseBranch.trim() || "provider default"}
+                        {selectedPrRepository || "no repository selected"}/
+                        {selectedPrBaseBranch || "no branch selected"}
                       </span>
                     </>
                   ) : null}
@@ -2080,42 +2210,244 @@ export default function GitActionsControl({
               ) : null}
             </div>
             {dialogIncludesPush ? (
-              <div className="space-y-3">
-                <label className="block space-y-1.5" htmlFor="git-action-push-remote">
-                  <span className="text-sm font-medium">Push remote</span>
-                  <Input
-                    id="git-action-push-remote"
-                    value={dialogPushRemoteName}
-                    onChange={(event) => setDialogPushRemoteName(event.target.value)}
-                    placeholder="origin"
-                  />
-                </label>
+              <div className="space-y-5">
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium">
+                    Push branch to
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      where the commit becomes visible
+                    </span>
+                  </legend>
+                  {gitRemotesQuery.isPending && gitRemotes.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Loading configured remotes...</p>
+                  ) : gitRemotes.length === 0 ? (
+                    <p className="text-xs text-destructive">
+                      No configured remotes were found. Add a remote before pushing.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {gitRemotes.map((remote) => {
+                        const isSelected = remote.name === selectedPushRemoteName;
+                        return (
+                          <label
+                            key={remote.name}
+                            className={cn(
+                              "grid min-h-13 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-3 py-2.5",
+                              isSelected
+                                ? "border-foreground bg-foreground/[0.04]"
+                                : "border-border bg-background",
+                            )}
+                          >
+                            <input
+                              type="radio"
+                              name="git-action-push-remote"
+                              value={remote.name}
+                              checked={isSelected}
+                              onChange={() => setDialogPushRemoteName(remote.name)}
+                              className="size-4 accent-primary"
+                            />
+                            <span className="min-w-0">
+                              <span className="block text-sm font-medium">{remote.name}</span>
+                              <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                                {remote.url}
+                              </span>
+                            </span>
+                            <span className="text-right text-xs text-muted-foreground">
+                              {remote.isPrimary ? "primary" : "remote"}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </fieldset>
                 {dialogIncludesPullRequest ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="block space-y-1.5" htmlFor="git-action-pr-repository">
-                      <span className="text-sm font-medium">PR repository</span>
-                      <Input
-                        id="git-action-pr-repository"
-                        value={dialogPrRepository}
-                        onChange={(event) => setDialogPrRepository(event.target.value)}
-                        placeholder="owner/repository"
-                      />
-                    </label>
-                    <label className="block space-y-1.5" htmlFor="git-action-pr-base-branch">
-                      <span className="text-sm font-medium">Base branch</span>
-                      <Input
-                        id="git-action-pr-base-branch"
-                        value={dialogPrBaseBranch}
-                        onChange={(event) => setDialogPrBaseBranch(event.target.value)}
-                        placeholder="main"
-                      />
-                    </label>
-                  </div>
+                  <>
+                    <fieldset className="space-y-2">
+                      <legend className="text-sm font-medium">
+                        Create PR in
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          repository that receives the PR
+                        </span>
+                      </legend>
+                      {gitRemotesQuery.isPending && prRepositoryOptions.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          Loading repository destinations...
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {prRepositoryOptions.length === 0 ? (
+                            <p className="text-xs text-destructive">
+                              No repository paths could be read from the configured remotes.
+                            </p>
+                          ) : (
+                            prRepositoryOptions.map((option) => {
+                              const isSelected =
+                                !isCustomPrRepository && option.repository === selectedPrRepository;
+                              return (
+                                <label
+                                  key={`${option.remoteName}:${option.repository}`}
+                                  className={cn(
+                                    "grid min-h-13 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md border px-3 py-2.5",
+                                    isSelected
+                                      ? "border-foreground bg-foreground/[0.04]"
+                                      : "border-border bg-background",
+                                  )}
+                                >
+                                  <input
+                                    type="radio"
+                                    name="git-action-pr-repository"
+                                    value={option.repository}
+                                    checked={isSelected}
+                                    onChange={() => {
+                                      setIsCustomPrRepository(false);
+                                      setDialogPrRepository(option.repository);
+                                    }}
+                                    className="size-4 accent-primary"
+                                  />
+                                  <span className="min-w-0">
+                                    <span className="block text-sm font-medium">
+                                      {option.remoteName}
+                                    </span>
+                                    <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                                      {option.repository}
+                                    </span>
+                                  </span>
+                                  <span className="text-right text-xs text-muted-foreground">
+                                    {option.remoteName === preferredPrRemoteName
+                                      ? "recommended"
+                                      : option.isPrimary
+                                        ? "primary"
+                                        : "remote"}
+                                  </span>
+                                </label>
+                              );
+                            })
+                          )}
+                          <label
+                            className={cn(
+                              "grid min-h-11 grid-cols-[1rem_minmax(0,1fr)] items-center gap-3 rounded-md border px-3 py-2",
+                              isCustomPrRepository
+                                ? "border-foreground bg-foreground/[0.04]"
+                                : "border-border bg-background",
+                            )}
+                          >
+                            <input
+                              type="radio"
+                              name="git-action-pr-repository"
+                              value="custom"
+                              checked={isCustomPrRepository}
+                              onChange={() => setIsCustomPrRepository(true)}
+                              className="size-4 accent-primary"
+                            />
+                            <span>
+                              <span className="block text-sm font-medium">Other repository</span>
+                              <span className="block text-xs text-muted-foreground">
+                                Enter the provider repository path
+                              </span>
+                            </span>
+                          </label>
+                          {isCustomPrRepository ? (
+                            <label
+                              className="block space-y-1.5"
+                              htmlFor="git-action-pr-repository-custom"
+                            >
+                              <span className="text-xs font-medium">Repository path</span>
+                              <Input
+                                id="git-action-pr-repository-custom"
+                                value={customPrRepository}
+                                onChange={(event) => setCustomPrRepository(event.target.value)}
+                                placeholder="owner/repository"
+                              />
+                            </label>
+                          ) : null}
+                        </div>
+                      )}
+                    </fieldset>
+                    <fieldset className="space-y-2">
+                      <legend className="text-sm font-medium">
+                        Base branch
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          target branch for the PR
+                        </span>
+                      </legend>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {baseBranchOptions.map((option) => {
+                          const isSelected =
+                            !isCustomPrBaseBranch && option.name === selectedPrBaseBranch;
+                          return (
+                            <label
+                              key={option.name}
+                              className={cn(
+                                "flex min-h-10 items-center gap-2 rounded-md border px-3 py-2",
+                                isSelected
+                                  ? "border-foreground bg-foreground/[0.04]"
+                                  : "border-border bg-background",
+                              )}
+                            >
+                              <input
+                                type="radio"
+                                name="git-action-pr-base-branch"
+                                value={option.name}
+                                checked={isSelected}
+                                onChange={() => {
+                                  setIsCustomPrBaseBranch(false);
+                                  setDialogPrBaseBranch(option.name);
+                                }}
+                                className="size-4 accent-primary"
+                              />
+                              <span className="font-mono text-xs">{option.name}</span>
+                              {option.isDefault ? (
+                                <span className="ml-auto text-xs text-muted-foreground">
+                                  default
+                                </span>
+                              ) : null}
+                            </label>
+                          );
+                        })}
+                        <label
+                          className={cn(
+                            "flex min-h-10 items-center gap-2 rounded-md border px-3 py-2",
+                            isCustomPrBaseBranch
+                              ? "border-foreground bg-foreground/[0.04]"
+                              : "border-border bg-background",
+                          )}
+                        >
+                          <input
+                            type="radio"
+                            name="git-action-pr-base-branch"
+                            value="custom"
+                            checked={isCustomPrBaseBranch}
+                            onChange={() => setIsCustomPrBaseBranch(true)}
+                            className="size-4 accent-primary"
+                          />
+                          <span className="font-mono text-xs">Other branch</span>
+                        </label>
+                      </div>
+                      {isCustomPrBaseBranch ? (
+                        <label
+                          className="block space-y-1.5"
+                          htmlFor="git-action-pr-base-branch-custom"
+                        >
+                          <span className="text-xs font-medium">Branch name</span>
+                          <Input
+                            id="git-action-pr-base-branch-custom"
+                            value={customPrBaseBranch}
+                            onChange={(event) => setCustomPrBaseBranch(event.target.value)}
+                            placeholder="main"
+                          />
+                        </label>
+                      ) : null}
+                      <p className="text-xs text-muted-foreground">
+                        Branches come from local and fetched remote refs.
+                      </p>
+                    </fieldset>
+                  </>
                 ) : null}
                 <p className="text-xs text-muted-foreground">
                   {dialogIncludesPullRequest
-                    ? "Commits stay local. Leave the PR fields empty to use provider defaults."
-                    : "Commits stay local. This remote is only used to publish the branch."}
+                    ? "Commit locally, push the selected remote, then open the PR in the selected repository."
+                    : "Commit locally, then publish the branch to the selected remote."}
                 </p>
               </div>
             ) : null}
@@ -2148,7 +2480,11 @@ export default function GitActionsControl({
                 Commit on new refName
               </Button>
             ) : null}
-            <Button size="sm" disabled={dialogWillCommit && noneSelected} onClick={runDialogAction}>
+            <Button
+              size="sm"
+              disabled={(dialogWillCommit && noneSelected) || !destinationSelectionReady}
+              onClick={runDialogAction}
+            >
               {dialogSubmitLabel}
             </Button>
           </DialogFooter>

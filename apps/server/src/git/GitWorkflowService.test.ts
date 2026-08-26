@@ -1,13 +1,18 @@
 import { assert, describe, expect, it, vi } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import { VcsRepositoryDetectionError } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriver from "../vcs/VcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+
+const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
 function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
@@ -134,6 +139,57 @@ describe("GitWorkflowService", () => {
       ),
     ),
   );
+
+  it.effect("lists remotes from the resolved VCS driver", () => {
+    const result = {
+      remotes: [
+        {
+          name: "origin",
+          url: "git@github.com:klepto/t3code.git",
+          pushUrl: Option.none(),
+          isPrimary: true,
+        },
+      ],
+      freshness: {
+        source: "live-local" as const,
+        observedAt: TEST_EPOCH,
+        expiresAt: Option.none(),
+      },
+    };
+    const listRemotes = vi.fn(() => Effect.succeed(result));
+    const driver = { listRemotes } satisfies Partial<VcsDriver.VcsDriver["Service"]>;
+    const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          resolve: () =>
+            Effect.succeed({
+              kind: "git" as const,
+              repository: {
+                kind: "git" as const,
+                rootPath: "/repo",
+                metadataPath: null,
+                freshness: {
+                  source: "live-local" as const,
+                  observedAt: TEST_EPOCH,
+                  expiresAt: Option.none(),
+                },
+              },
+              driver: driver as unknown as VcsDriver.VcsDriver["Service"],
+            }),
+        }),
+      ),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+    );
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const remotes = yield* workflow.listRemotes({ cwd: "/repo" });
+
+      assert.deepStrictEqual(remotes, result);
+      expect(listRemotes).toHaveBeenCalledWith("/repo");
+    }).pipe(Effect.provide(testLayer));
+  });
 
   it.effect("structures workflow detection failures without exposing upstream details", () => {
     const cause = new VcsRepositoryDetectionError({
